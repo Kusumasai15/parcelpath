@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Shipment, UserProfile, SupportTicket, InAppAlert, PageViewId } from './types';
 import {
   calculateSummaryStats,
@@ -55,11 +55,14 @@ export default function App() {
   // Auth & Session
   const [sessionToken, setSessionToken] = useState<string | null>(() => {
     try {
-      return localStorage.getItem('parcelpath-session-token') || 'demo_session_token_kusuma';
+      const saved = localStorage.getItem('parcelpath-session-token');
+      return saved === 'demo_session_token_kusuma' ? null : saved;
     } catch {
-      return 'demo_session_token_kusuma';
+      return null;
     }
   });
+  const activeSession = useRef(sessionToken);
+  activeSession.current = sessionToken;
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
 
   // Shipments state
@@ -111,9 +114,9 @@ export default function App() {
   });
 
   // Settings form fields
-  const [profileName, setProfileName] = useState('Kusuma');
+  const [profileName, setProfileName] = useState('');
   const [profileEmail, setProfileEmail] = useState('');
-  const [backupRecipient, setBackupRecipient] = useState('Ravi · Security desk');
+  const [backupRecipient, setBackupRecipient] = useState('');
   const [deliveryInstructions, setDeliveryInstructions] = useState('');
   const [statusNotification, setStatusNotification] = useState(true);
   const [arrivalNotification, setArrivalNotification] = useState(true);
@@ -159,14 +162,16 @@ export default function App() {
 
   // Fetch current user profile
   const fetchUserProfile = useCallback(async () => {
+    if (!sessionToken) { setCurrentUser(null); return; }
     try {
       const res = await fetch('/api/auth/me', {
         headers: {
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
       if (res.ok) {
         const data = await res.json();
+        if (activeSession.current !== sessionToken) return;
         setCurrentUser(data.user);
         setProfileName(data.user.name);
         setProfileEmail(data.user.email);
@@ -184,34 +189,38 @@ export default function App() {
 
   // Fetch shipments
   const fetchShipments = useCallback(async () => {
+    if (!sessionToken) { setShipments([]); setLoadingShipments(false); return; }
     setLoadingShipments(true);
     try {
       const res = await fetch('/api/shipments', {
         headers: {
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
       if (res.ok) {
         const data = await res.json();
+        if (activeSession.current !== sessionToken) return;
         setShipments(data.shipments || []);
       }
     } catch (e) {
       console.error('Failed to load shipments:', e);
     } finally {
-      setLoadingShipments(false);
+      if (activeSession.current === sessionToken) setLoadingShipments(false);
     }
   }, [sessionToken]);
 
   // Fetch alerts
   const fetchAlerts = useCallback(async () => {
+    if (!sessionToken) { setAlerts([]); return; }
     try {
       const res = await fetch('/api/notifications', {
         headers: {
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
       if (res.ok) {
         const data = await res.json();
+        if (activeSession.current !== sessionToken) return;
         setAlerts(data.alerts || []);
       }
     } catch (e) {
@@ -221,14 +230,16 @@ export default function App() {
 
   // Fetch tickets
   const fetchTickets = useCallback(async () => {
+    if (!sessionToken) { setTickets([]); return; }
     try {
       const res = await fetch('/api/tickets', {
         headers: {
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
       if (res.ok) {
         const data = await res.json();
+        if (activeSession.current !== sessionToken) return;
         setTickets(data.tickets || []);
       }
     } catch (e) {
@@ -372,7 +383,7 @@ export default function App() {
       const res = await fetch(`/api/shipments/${shipmentId}`, {
         method: 'DELETE',
         headers: {
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
       if (res.ok) {
@@ -389,7 +400,7 @@ export default function App() {
       const res = await fetch(`/api/shipments/${shipmentId}/refresh`, {
         method: 'POST',
         headers: {
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
       if (res.ok) {
@@ -409,7 +420,7 @@ export default function App() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({ label: newLabel }),
       });
@@ -433,7 +444,7 @@ export default function App() {
       await fetch(`/api/notifications/${id}/read`, {
         method: 'POST',
         headers: {
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
       setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, read: true } : a)));
@@ -447,7 +458,7 @@ export default function App() {
       await fetch('/api/notifications/mark-all-read', {
         method: 'POST',
         headers: {
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
       setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
@@ -504,7 +515,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
       if (res.ok) {
@@ -535,7 +546,7 @@ export default function App() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
           backupRecipient,
@@ -559,7 +570,7 @@ export default function App() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
           name: profileName,
@@ -593,7 +604,7 @@ export default function App() {
       await fetch('/api/auth/account', {
         method: 'DELETE',
         headers: {
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
       localStorage.removeItem('parcelpath-session-token');
@@ -608,24 +619,55 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('parcelpath-session-token');
+  const handleLogout = async () => {
+    const token = sessionToken;
+    activeSession.current = null;
+    try { localStorage.removeItem('parcelpath-session-token'); } catch {}
     setSessionToken(null);
     setCurrentUser(null);
-    setIsAuthOpen(false);
-    fetchUserProfile();
-    fetchShipments();
+    setShipments([]);
+    setTickets([]);
+    setAlerts([]);
+    setProfileName('');
+    setProfileEmail('');
+    setBackupRecipient('');
+    setDeliveryInstructions('');
+    setLoadingShipments(false);
+    setActiveDetailShipment(null);
+    setPreselectedIssueShipment(null);
+    setSelectedDeliveryId(null);
+    setShowNotifications(false);
+    setIsDetailsOpen(false);
+    setIsAddOpen(false);
+    setIsReportOpen(false);
+    setIsFeedbackOpen(false);
+    setIsEmailConnectOpen(false);
+    setMenuOpen(false);
+    setActivePage('dashboard');
+    setIsAuthOpen(true);
+    setSettingsNotice('Signed out.');
+    if (token) {
+      try {
+        const res = await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error('Session revocation failed');
+      } catch {
+        setSettingsNotice('Signed out on this device. Could not confirm server sign-out; please check your connection.');
+      }
+    }
   };
 
   const handleLoginSuccess = (user: UserProfile, token: string) => {
+    activeSession.current = token;
     setCurrentUser(user);
     setSessionToken(token);
+    setSettingsNotice(null);
     try {
       localStorage.setItem('parcelpath-session-token', token);
     } catch {}
-    fetchShipments();
-    fetchTickets();
-    fetchAlerts();
+    // The session-dependent effect loads the new account's data.
   };
 
   const navigateTo = (page: PageViewId) => {
@@ -710,7 +752,7 @@ export default function App() {
               onClick={() => setIsAuthOpen(true)}
               style={{ cursor: 'pointer', border: 'none' }}
             >
-              {currentUser ? currentUser.avatarInitial : 'K'}
+              {currentUser ? currentUser.avatarInitial : 'Sign in'}
             </button>
           </div>
         </header>
