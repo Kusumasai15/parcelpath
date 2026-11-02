@@ -2025,10 +2025,10 @@ export default function App() {
                   </form>
                 </article>
 
-                {sessionToken && currentUser && <PasswordSettings token={sessionToken} onChanged={() => {
+                <PasswordSettings token={currentUser ? sessionToken : null} onSignIn={() => setIsAuthOpen(true)} onChanged={() => {
                   void handleLogout();
                   setSettingsNotice('Password changed. Sign in again with your new password.');
-                }} />}
+                }} />
 
                 <article className="settings-card">
                   <h2>Appearance</h2>
