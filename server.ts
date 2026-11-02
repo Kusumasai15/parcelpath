@@ -190,7 +190,7 @@ app.get('/api/shipments', authMiddleware, (req: Request, res: Response) => {
 
 app.post('/api/shipments', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
-  const { trackingNumber, courier: userCourier, store, item, imageUrl } = req.body;
+  const { trackingNumber, courier: userCourier, store, item, customLabel, imageUrl } = req.body;
 
   if (!trackingNumber || !trackingNumber.trim()) {
     return res.status(400).json({ error: 'Tracking number / AWB is required.' });
@@ -222,6 +222,7 @@ app.post('/api/shipments', authMiddleware, (req: Request, res: Response) => {
 
   const now = new Date();
   const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const twoDaysLater = new Date(Date.now() + 2 * 86400000).toISOString().split('T')[0];
 
   const initialEvents: TrackingEvent[] = [
     { title: 'Tracking record created', time: `Today, ${timeStr}`, isDone: true },
@@ -236,17 +237,22 @@ app.post('/api/shipments', authMiddleware, (req: Request, res: Response) => {
 
   const newShipment = db.addShipment(user.id, {
     item: item?.trim() || `${courierInfo.name} Parcel`,
+    customLabel: customLabel?.trim() || undefined,
     store: store?.trim() || 'Online Store',
     trackingNumber: rawTracking,
     courier: courierKey,
     courierName: courierInfo.name,
     status: 'In transit',
     eta: honestEta.main,
+    estimatedDate: twoDaysLater,
+    timeWindow: undefined, // Honest: exact window unavailable
     location: 'Carrier origin hub (Today)',
     events: initialEvents,
     imageUrl: imageUrl?.trim() || undefined,
     isArchived: false,
     isDemo: false,
+    lastRefreshedAt: new Date().toISOString(),
+    courierEventTime: `Today, ${timeStr}`,
   });
 
   return res.status(201).json({ shipment: newShipment });
@@ -255,13 +261,30 @@ app.post('/api/shipments', authMiddleware, (req: Request, res: Response) => {
 app.put('/api/shipments/:id', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
   const shipmentId = req.params.id;
-  const { item, store, notes, isArchived } = req.body;
+  const { item, store, customLabel, notes, isArchived } = req.body;
 
   const updated = db.updateShipment(shipmentId, user.id, {
     ...(item !== undefined && { item: item.trim() }),
     ...(store !== undefined && { store: store.trim() }),
+    ...(customLabel !== undefined && { customLabel: customLabel.trim() }),
     ...(notes !== undefined && { notes }),
     ...(isArchived !== undefined && { isArchived }),
+  });
+
+  if (!updated) {
+    return res.status(404).json({ error: 'Shipment not found.' });
+  }
+
+  return res.json({ shipment: updated });
+});
+
+app.put('/api/shipments/:id/label', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const shipmentId = req.params.id;
+  const { label } = req.body;
+
+  const updated = db.updateShipment(shipmentId, user.id, {
+    customLabel: label ? label.trim() : undefined,
   });
 
   if (!updated) {
@@ -293,12 +316,63 @@ app.post('/api/shipments/:id/refresh', authMiddleware, (req: Request, res: Respo
     return res.status(404).json({ error: 'Shipment not found.' });
   }
 
-  // Update lastUpdated timestamp truthfully
+  // Update lastRefreshedAt timestamp truthfully
   const updated = db.updateShipment(shipment.id, user.id, {
-    lastUpdated: 'Just now',
+    lastRefreshedAt: new Date().toISOString(),
   });
 
   return res.json({ shipment: updated, refreshed: true });
+});
+
+// "I won't be home" / Rescheduling inquiry
+app.post('/api/shipments/:id/reschedule', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const shipment = db.getShipmentById(req.params.id, user.id);
+  if (!shipment) {
+    return res.status(404).json({ error: 'Shipment not found.' });
+  }
+
+  const courierInfo = SUPPORTED_COURIERS[shipment.courier] || SUPPORTED_COURIERS.other;
+  const officialRescheduleUrl = courierInfo.reschedulingUrl
+    ? courierInfo.reschedulingUrl(shipment.trackingNumber.replace(/^…/, ''))
+    : null;
+
+  return res.json({
+    shipmentId: shipment.id,
+    courier: courierInfo.name,
+    trackingNumber: shipment.trackingNumber,
+    isDirectIntegrationAvailable: false,
+    message: `Direct doorstep rescheduling is determined by ${courierInfo.name}'s delivery policy. ParcelPath does not fabricate fake time slots. You can request a delivery reschedule or leave instructions via the carrier's official portal.`,
+    officialPortalUrl: officialRescheduleUrl || courierInfo.trackingUrl(shipment.trackingNumber.replace(/^…/, '')),
+    backupRecipientRecommendation: user.backupRecipient
+      ? `Your saved backup recipient: ${user.backupRecipient}`
+      : 'You can set a backup recipient in Delivery Preferences.',
+  });
+});
+
+// --- In-App Alerts API ---
+app.get('/api/notifications', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const alerts = db.getAlertsForUser(user.id);
+  return res.json({ alerts });
+});
+
+app.post('/api/notifications/:id/read', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const success = db.markAlertRead(req.params.id, user.id);
+  return res.json({ success });
+});
+
+app.post('/api/notifications/mark-all-read', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  db.markAllAlertsRead(user.id);
+  return res.json({ success: true });
+});
+
+app.delete('/api/notifications', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  db.clearAlerts(user.id);
+  return res.json({ success: true });
 });
 
 // --- Email Integration ---
@@ -321,7 +395,6 @@ app.post('/api/integrations/email/connect', authMiddleware, (req: Request, res: 
   const isOauthConfigured = !!process.env.GOOGLE_CLIENT_ID;
 
   if (!isOauthConfigured) {
-    // Return honest setup required state as required by Section 6
     return res.status(400).json({
       error: 'Google OAuth credentials not configured on server.',
       instructions: 'Please add GOOGLE_CLIENT_ID to your environment variables to enable Gmail read-only order scanning.',

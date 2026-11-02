@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Shipment } from '../types';
-import { SUPPORTED_COURIERS } from '../utils/courier';
+import { SUPPORTED_COURIERS, formatRelativeTime, getShipmentProgress } from '../utils/courier';
 
 interface OrderDetailsModalProps {
   shipment: Shipment | null;
@@ -9,6 +9,8 @@ interface OrderDetailsModalProps {
   onReportIssue: (shipment: Shipment) => void;
   onDeleteShipment: (shipmentId: string) => Promise<void>;
   onRefreshShipment: (shipmentId: string) => Promise<void>;
+  onUpdateLabel?: (shipmentId: string, newLabel: string) => Promise<void>;
+  sessionToken: string | null;
 }
 
 export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
@@ -18,16 +20,33 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   onReportIssue,
   onDeleteShipment,
   onRefreshShipment,
+  onUpdateLabel,
+  sessionToken,
 }) => {
   const [copied, setCopied] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // Custom label edit mode
+  const [isEditingLabel, setIsEditingLabel] = useState(false);
+  const [labelInput, setLabelInput] = useState('');
+  const [savingLabel, setSavingLabel] = useState(false);
+
+  // "I won't be home" dialog state
+  const [showRescheduleDialog, setShowRescheduleDialog] = useState(false);
+  const [rescheduleData, setRescheduleData] = useState<{
+    message: string;
+    officialPortalUrl: string;
+    backupRecipientRecommendation: string;
+  } | null>(null);
+  const [rescheduleLoading, setRescheduleLoading] = useState(false);
+
   if (!isOpen || !shipment) return null;
 
   const courierInfo = SUPPORTED_COURIERS[shipment.courier] || SUPPORTED_COURIERS.other;
   const officialTrackingLink = courierInfo.trackingUrl(shipment.trackingNumber.replace(/^…/, ''));
+  const progress = getShipmentProgress(shipment.status);
 
   const handleCopyTracking = () => {
     navigator.clipboard.writeText(shipment.trackingNumber);
@@ -47,6 +66,34 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     setIsDeleting(false);
     setConfirmDelete(false);
     onClose();
+  };
+
+  const handleSaveLabel = async () => {
+    if (!onUpdateLabel) return;
+    setSavingLabel(true);
+    await onUpdateLabel(shipment.id, labelInput);
+    setSavingLabel(false);
+    setIsEditingLabel(false);
+  };
+
+  const handleWontBeHomeClick = async () => {
+    setRescheduleLoading(true);
+    setShowRescheduleDialog(true);
+    try {
+      const res = await fetch(`/api/shipments/${shipment.id}/reschedule`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+        },
+      });
+      const data = await res.json();
+      setRescheduleData(data);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setRescheduleLoading(false);
+    }
   };
 
   const isAttempted = shipment.status.toLowerCase().includes('attempted') || shipment.status.toLowerCase().includes('delayed');
@@ -85,7 +132,14 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 )}
               </div>
               <div>
-                <p className="dialog-kicker">Parcel details {shipment.isDemo && '· Demo Package'}</p>
+                <p className="dialog-kicker">
+                  Parcel details {shipment.isDemo && '· Demo Package'}
+                  {shipment.customLabel && (
+                    <span className="custom-label-badge" style={{ textTransform: 'none' }}>
+                      🏷 {shipment.customLabel}
+                    </span>
+                  )}
+                </p>
                 <h2 id="detail-title">{shipment.item}</h2>
                 <p className="dialog-sub" id="detail-store">
                   {shipment.store} · Tracking {shipment.trackingNumber}
@@ -97,6 +151,98 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </button>
           </div>
 
+          {/* Custom Label Quick Editor */}
+          <div
+            style={{
+              margin: '12px 0',
+              padding: '8px 12px',
+              borderRadius: '8px',
+              border: '1px solid var(--line)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '11px',
+            }}
+          >
+            {isEditingLabel ? (
+              <div style={{ display: 'flex', gap: '8px', width: '100%', alignItems: 'center' }}>
+                <input
+                  type="text"
+                  value={labelInput}
+                  onChange={(e) => setLabelInput(e.target.value)}
+                  placeholder="e.g. Birthday gift, Urgent..."
+                  autoFocus
+                  style={{
+                    flex: 1,
+                    padding: '5px 8px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--line)',
+                    background: 'var(--page)',
+                    color: 'var(--ink)',
+                    fontSize: '11px',
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveLabel}
+                  disabled={savingLabel}
+                  style={{
+                    padding: '5px 10px',
+                    borderRadius: '6px',
+                    background: 'var(--coral)',
+                    color: 'var(--coral-ink)',
+                    border: 'none',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingLabel(false)}
+                  style={{
+                    padding: '5px 8px',
+                    borderRadius: '6px',
+                    background: 'transparent',
+                    color: 'var(--muted)',
+                    border: '1px solid var(--line)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <>
+                <span style={{ color: 'var(--muted)' }}>
+                  Custom tag:{' '}
+                  <strong style={{ color: 'var(--ink)' }}>
+                    {shipment.customLabel || 'No tag added'}
+                  </strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLabelInput(shipment.customLabel || '');
+                    setIsEditingLabel(true);
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--accent-text)',
+                    cursor: 'pointer',
+                    fontSize: '11px',
+                    padding: 0,
+                  }}
+                >
+                  ✎ {shipment.customLabel ? 'Edit tag' : 'Add tag'}
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Hero status & ETA */}
           <div className="detail-hero">
             <span className={isAttempted ? 'status alert' : 'status'} id="detail-status">
               <i />
@@ -104,10 +250,27 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </span>
             <div className="detail-eta">
               <span>Estimated arrival</span>
-              <strong id="detail-eta-value">{shipment.eta}</strong>
+              <strong id="detail-eta-value">
+                {shipment.timeWindow || shipment.eta || 'Time not available'}
+              </strong>
             </div>
           </div>
 
+          {/* Progress Indicator */}
+          <div style={{ marginBottom: '18px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--muted)', marginBottom: '4px' }}>
+              <span>Delivery progress: <strong style={{ color: progress.isAlert ? 'var(--coral)' : 'var(--ink)' }}>{progress.label}</strong></span>
+              <span>{progress.percentage}%</span>
+            </div>
+            <div className="delivery-progress-track" style={{ height: '5px' }}>
+              <div
+                className={`delivery-progress-bar ${progress.isAlert ? 'is-alert' : ''}`}
+                style={{ width: `${progress.percentage}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Fact cards */}
           <div className="detail-facts">
             <div className="detail-fact">
               <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -156,12 +319,35 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </div>
           </div>
 
+          {/* Distinct Timestamps */}
+          <div
+            style={{
+              padding: '10px 12px',
+              borderRadius: '8px',
+              backgroundColor: 'color-mix(in srgb, var(--surface-raised) 70%, var(--mauve))',
+              marginBottom: '16px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontSize: '10px',
+            }}
+          >
+            <span>
+              Tracker status: <strong style={{ color: 'var(--ink)' }}>{formatRelativeTime(shipment.lastRefreshedAt)}</strong>
+            </span>
+            {shipment.courierEventTime && (
+              <span>
+                Courier scan: <strong style={{ color: 'var(--ink)' }}>{shipment.courierEventTime}</strong>
+              </span>
+            )}
+          </div>
+
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
             <h3 className="timeline-title" style={{ margin: 0 }}>
               Tracking timeline
             </h3>
             <span style={{ fontSize: '10px', color: 'var(--muted)' }}>
-              Updated {shipment.lastUpdated}
+              {formatRelativeTime(shipment.lastRefreshedAt)}
             </span>
           </div>
 
@@ -189,6 +375,68 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           <p className="detail-note">
             Arrival times and location updates are provided by {shipment.courierName || 'the courier'}. We do not fabricate doorstep ETAs or moving driver positions.
           </p>
+
+          {/* "I Won't Be Home" Rescheduling Modal / Panel */}
+          {showRescheduleDialog && (
+            <div
+              style={{
+                marginTop: '16px',
+                padding: '14px',
+                borderRadius: '10px',
+                border: '1px solid var(--line)',
+                backgroundColor: 'color-mix(in srgb, var(--surface-raised) 90%, var(--mauve))',
+                fontSize: '11px',
+                lineHeight: '1.45',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <strong style={{ fontSize: '12px', color: 'var(--coral)' }}>
+                  “I won’t be home” — Rescheduling Information
+                </strong>
+                <button
+                  type="button"
+                  onClick={() => setShowRescheduleDialog(false)}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '14px' }}
+                >
+                  ×
+                </button>
+              </div>
+
+              {rescheduleLoading ? (
+                <p style={{ margin: 0, color: 'var(--muted)' }}>Checking carrier options...</p>
+              ) : rescheduleData ? (
+                <>
+                  <p style={{ margin: '0 0 10px', color: 'var(--muted)' }}>
+                    {rescheduleData.message}
+                  </p>
+                  <p style={{ margin: '0 0 12px', color: 'var(--ink)' }}>
+                    {rescheduleData.backupRecipientRecommendation}
+                  </p>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {rescheduleData.officialPortalUrl && (
+                      <a
+                        href={rescheduleData.officialPortalUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          padding: '7px 12px',
+                          borderRadius: '7px',
+                          border: '1px solid var(--accent-text)',
+                          background: 'transparent',
+                          color: 'var(--accent-text)',
+                          fontSize: '11px',
+                          textDecoration: 'none',
+                          fontWeight: 500,
+                        }}
+                      >
+                        Open {shipment.courierName} Support Portal ↗
+                      </a>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          )}
 
           {confirmDelete ? (
             <div
@@ -248,6 +496,15 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               >
                 {isRefreshing ? 'Refreshing...' : '↻ Check status'}
               </button>
+              {shipment.status !== 'Delivered' && (
+                <button
+                  type="button"
+                  onClick={handleWontBeHomeClick}
+                  style={{ borderColor: 'var(--accent-text)', color: 'var(--accent-text)' }}
+                >
+                  I won’t be home
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setConfirmDelete(true)}

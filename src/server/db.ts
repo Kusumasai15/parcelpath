@@ -29,12 +29,14 @@ export interface Shipment {
   id: string;
   userId: string;
   item: string;
+  customLabel?: string;
   store: string;
   trackingNumber: string;
   courier: string;
   courierName: string;
   status: 'In transit' | 'Out for delivery' | 'Delivery attempted' | 'Delivered' | 'Delayed' | 'Exception';
   eta: string;
+  estimatedDate?: string;
   timeWindow?: string;
   location: string;
   events: TrackingEvent[];
@@ -42,7 +44,9 @@ export interface Shipment {
   isArchived: boolean;
   isDemo: boolean;
   notes?: string;
-  lastUpdated: string;
+  lastUpdated?: string;
+  lastRefreshedAt: string;
+  courierEventTime?: string;
   createdAt: string;
 }
 
@@ -62,6 +66,19 @@ export interface SupportTicket {
   createdAt: string;
 }
 
+export interface InAppAlert {
+  id: string;
+  userId: string;
+  shipmentId: string;
+  shipmentItem: string;
+  trackingNumber: string;
+  type: 'out_for_delivery' | 'attempt' | 'delayed' | 'delivered' | 'estimate_change';
+  title: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+
 export interface EmailIntegrationState {
   status: 'disconnected' | 'setup_required' | 'connected';
   email?: string;
@@ -73,6 +90,7 @@ export interface DatabaseSchema {
   users: User[];
   shipments: Shipment[];
   tickets: SupportTicket[];
+  alerts: InAppAlert[];
   sessions: Record<string, string>; // token -> userId
   emailIntegrations: Record<string, EmailIntegrationState>; // userId -> state
 }
@@ -88,6 +106,10 @@ function initDefaultDatabase(): DatabaseSchema {
   const defaultUserId = 'user_kusuma_default';
   const defaultPasswordHash = hashPassword('welcome123');
 
+  const todayStr = new Date().toISOString().split('T')[0];
+  const tomorrowStr = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+  const nowIso = new Date().toISOString();
+
   const defaultUser: User = {
     id: defaultUserId,
     email: 'saddikutikusumasai@gmail.com',
@@ -101,7 +123,7 @@ function initDefaultDatabase(): DatabaseSchema {
       arrivalReminders: true,
     },
     role: 'user',
-    createdAt: new Date().toISOString(),
+    createdAt: nowIso,
   };
 
   const defaultShipments: Shipment[] = [
@@ -109,12 +131,14 @@ function initDefaultDatabase(): DatabaseSchema {
       id: 'ship_4821',
       userId: defaultUserId,
       item: 'Wireless headphones',
+      customLabel: 'Urgent',
       store: 'Amazon',
       trackingNumber: '…4821',
       courier: 'delhivery',
       courierName: 'Delhivery',
       status: 'Out for delivery',
       eta: 'Today, 2:30–3:15 PM',
+      estimatedDate: todayStr,
       timeWindow: 'Today, 2:30–3:15 PM',
       location: 'Local delivery hub (Today, 8:05 AM)',
       events: [
@@ -124,19 +148,24 @@ function initDefaultDatabase(): DatabaseSchema {
       ],
       isArchived: false,
       isDemo: true,
-      lastUpdated: 'A few minutes ago',
+      lastUpdated: 'Updated 5 minutes ago',
+      lastRefreshedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+      courierEventTime: 'Today, 10:42 AM',
       createdAt: new Date(Date.now() - 86400000).toISOString(),
     },
     {
       id: 'ship_9034',
       userId: defaultUserId,
       item: 'Daily skincare set',
+      customLabel: 'Birthday gift',
       store: 'Nykaa',
       trackingNumber: '…9034',
       courier: 'bluedart',
       courierName: 'Blue Dart',
       status: 'Delivery attempted',
       eta: 'Check available options',
+      estimatedDate: todayStr,
+      timeWindow: undefined, // Time not available
       location: 'Delivery center (Today, 11:15 AM)',
       events: [
         { title: 'Order confirmed', time: 'Yesterday, 4:30 PM', isDone: true },
@@ -145,19 +174,24 @@ function initDefaultDatabase(): DatabaseSchema {
       ],
       isArchived: false,
       isDemo: true,
-      lastUpdated: '1 hour ago',
+      lastUpdated: 'Updated 22 minutes ago',
+      lastRefreshedAt: new Date(Date.now() - 22 * 60 * 1000).toISOString(),
+      courierEventTime: 'Today, 11:15 AM',
       createdAt: new Date(Date.now() - 90000000).toISOString(),
     },
     {
       id: 'ship_1172',
       userId: defaultUserId,
       item: 'Cotton kurta',
+      customLabel: 'College supplies',
       store: 'Flipkart',
       trackingNumber: '…1172',
       courier: 'ekart',
       courierName: 'Ekart Logistics',
       status: 'In transit',
       eta: 'Expected tomorrow',
+      estimatedDate: tomorrowStr,
+      timeWindow: undefined,
       location: 'Transit hub (Today, 7:45 AM)',
       events: [
         { title: 'Order confirmed', time: 'Yesterday, 7:20 PM', isDone: true },
@@ -166,8 +200,63 @@ function initDefaultDatabase(): DatabaseSchema {
       ],
       isArchived: false,
       isDemo: true,
-      lastUpdated: '3 hours ago',
+      lastUpdated: 'Updated 1 hour ago',
+      lastRefreshedAt: new Date(Date.now() - 65 * 60 * 1000).toISOString(),
+      courierEventTime: 'Today, 7:45 AM',
       createdAt: new Date(Date.now() - 95000000).toISOString(),
+    },
+    // Completed delivery for delivery history
+    {
+      id: 'ship_8801',
+      userId: defaultUserId,
+      item: 'Stainless steel water bottle',
+      customLabel: 'Personal',
+      store: 'Amazon',
+      trackingNumber: '…8801',
+      courier: 'delhivery',
+      courierName: 'Delhivery',
+      status: 'Delivered',
+      eta: 'Delivered',
+      estimatedDate: new Date(Date.now() - 3 * 86400000).toISOString().split('T')[0],
+      location: 'Handed over to recipient / Security',
+      events: [
+        { title: 'Order confirmed', time: '3 days ago', isDone: true },
+        { title: 'Out for delivery', time: '3 days ago, 9:15 AM', isDone: true },
+        { title: 'Delivered', time: '3 days ago, 2:40 PM', isDone: true },
+      ],
+      isArchived: false,
+      isDemo: true,
+      lastUpdated: 'Delivered 3 days ago',
+      lastRefreshedAt: new Date(Date.now() - 3 * 86400000).toISOString(),
+      courierEventTime: '3 days ago, 2:40 PM',
+      createdAt: new Date(Date.now() - 4 * 86400000).toISOString(),
+    },
+  ];
+
+  const defaultAlerts: InAppAlert[] = [
+    {
+      id: 'alert_1',
+      userId: defaultUserId,
+      shipmentId: 'ship_4821',
+      shipmentItem: 'Wireless headphones',
+      trackingNumber: '…4821',
+      type: 'out_for_delivery',
+      title: 'Out for delivery: Wireless headphones',
+      message: 'Delhivery courier is out for delivery. Estimated arrival: Today, 2:30–3:15 PM.',
+      read: false,
+      createdAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+    },
+    {
+      id: 'alert_2',
+      userId: defaultUserId,
+      shipmentId: 'ship_9034',
+      shipmentItem: 'Daily skincare set',
+      trackingNumber: '…9034',
+      type: 'attempt',
+      title: 'Delivery attempted: Daily skincare set',
+      message: 'Blue Dart attempted delivery at 11:15 AM. A handoff or reschedule may be needed.',
+      read: false,
+      createdAt: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
     },
   ];
 
@@ -177,6 +266,7 @@ function initDefaultDatabase(): DatabaseSchema {
     users: [defaultUser],
     shipments: defaultShipments,
     tickets: [],
+    alerts: defaultAlerts,
     sessions: {
       [defaultToken]: defaultUserId,
     },
@@ -203,7 +293,9 @@ class Database {
       }
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        if (!parsed.alerts) parsed.alerts = [];
+        return parsed;
       }
     } catch (e) {
       console.warn('Could not read existing database, initializing fresh:', e);
@@ -304,6 +396,7 @@ class Database {
     this.data.users = this.data.users.filter((u) => u.id !== userId);
     this.data.shipments = this.data.shipments.filter((s) => s.userId !== userId);
     this.data.tickets = this.data.tickets.filter((t) => t.userId !== userId);
+    this.data.alerts = this.data.alerts.filter((a) => a.userId !== userId);
     delete this.data.emailIntegrations[userId];
     for (const [t, uid] of Object.entries(this.data.sessions)) {
       if (uid === userId) delete this.data.sessions[t];
@@ -321,6 +414,7 @@ class Database {
       list = list.filter(
         (s) =>
           s.item.toLowerCase().includes(q) ||
+          (s.customLabel && s.customLabel.toLowerCase().includes(q)) ||
           s.store.toLowerCase().includes(q) ||
           s.trackingNumber.toLowerCase().includes(q) ||
           s.courierName.toLowerCase().includes(q)
@@ -331,6 +425,13 @@ class Database {
       list = list.filter((s) => s.status !== 'Delivered');
     } else if (options.filter === 'delivered') {
       list = list.filter((s) => s.status === 'Delivered');
+    } else if (options.filter === 'today') {
+      const todayStr = new Date().toISOString().split('T')[0];
+      list = list.filter(
+        (s) =>
+          s.status !== 'Delivered' &&
+          (s.estimatedDate === todayStr || s.status === 'Out for delivery' || (s.eta && s.eta.toLowerCase().includes('today')))
+      );
     } else if (options.filter === 'attention') {
       list = list.filter(
         (s) => s.status === 'Delivery attempted' || s.status === 'Delayed' || s.status === 'Exception'
@@ -355,14 +456,14 @@ class Database {
     );
   }
 
-  addShipment(userId: string, shipment: Omit<Shipment, 'id' | 'userId' | 'createdAt' | 'lastUpdated'>): Shipment {
+  addShipment(userId: string, shipment: Omit<Shipment, 'id' | 'userId' | 'createdAt'>): Shipment {
     const id = 'ship_' + crypto.randomBytes(6).toString('hex');
     const newShipment: Shipment = {
       ...shipment,
       id,
       userId,
       isArchived: false,
-      lastUpdated: 'Just now',
+      lastRefreshedAt: shipment.lastRefreshedAt || new Date().toISOString(),
       createdAt: new Date().toISOString(),
     };
     this.data.shipments.unshift(newShipment);
@@ -375,7 +476,6 @@ class Database {
     if (!shipment) return undefined;
 
     Object.assign(shipment, updates);
-    shipment.lastUpdated = 'Just now';
     this.save();
     return shipment;
   }
@@ -386,6 +486,48 @@ class Database {
     const changed = this.data.shipments.length !== beforeCount;
     if (changed) this.save();
     return changed;
+  }
+
+  // --- In-App Alerts ---
+  getAlertsForUser(userId: string): InAppAlert[] {
+    return (this.data.alerts || []).filter((a) => a.userId === userId);
+  }
+
+  addAlert(alert: Omit<InAppAlert, 'id' | 'createdAt'>): InAppAlert {
+    const id = 'alert_' + crypto.randomBytes(6).toString('hex');
+    const newAlert: InAppAlert = {
+      ...alert,
+      id,
+      createdAt: new Date().toISOString(),
+    };
+    if (!this.data.alerts) this.data.alerts = [];
+    this.data.alerts.unshift(newAlert);
+    this.save();
+    return newAlert;
+  }
+
+  markAlertRead(id: string, userId: string): boolean {
+    const alert = (this.data.alerts || []).find((a) => a.id === id && a.userId === userId);
+    if (alert) {
+      alert.read = true;
+      this.save();
+      return true;
+    }
+    return false;
+  }
+
+  markAllAlertsRead(userId: string): void {
+    if (!this.data.alerts) return;
+    this.data.alerts.forEach((a) => {
+      if (a.userId === userId) a.read = true;
+    });
+    this.save();
+  }
+
+  clearAlerts(userId: string): void {
+    if (!this.data.alerts) return;
+    this.data.alerts = this.data.alerts.filter((a) => a.userId !== userId);
+    this.save();
   }
 
   // --- Tickets ---

@@ -1285,6 +1285,242 @@
   box-shadow: 0 7px 15px color-mix(in srgb, var(--accent-text) 30%, transparent);
 }
 
+/* Progress line on delivery cards */
+#delivery-reference-style .delivery-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  width: 100%;
+}
+
+#delivery-reference-style .delivery-progress-track {
+  flex: 1;
+  height: 3px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--surface) 60%, var(--mauve));
+  overflow: hidden;
+  position: relative;
+}
+
+#delivery-reference-style .delivery-progress-bar {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--coral);
+  transition: width 350ms cubic-bezier(.2,.8,.2,1);
+}
+
+#delivery-reference-style .delivery-progress-bar.is-alert {
+  background: var(--rust);
+}
+
+#delivery-reference-style .delivery-progress-label {
+  font-size: 9px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Custom Order Labels */
+#delivery-reference-style .custom-label-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-text) 18%, var(--surface));
+  color: var(--accent-text);
+  font-size: 9px;
+  font-weight: 500;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* Parcel added highlight animation */
+@keyframes parcel-added-pop {
+  0% { transform: translateY(-10px) scale(0.97); opacity: 0; }
+  50% { transform: translateY(0) scale(1.02); opacity: 1; border-color: var(--accent-text); box-shadow: 0 10px 30px color-mix(in srgb, var(--accent-text) 35%, transparent); }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+#delivery-reference-style .parcel-just-added {
+  animation: parcel-added-pop 600ms cubic-bezier(.2,.8,.2,1);
+}
+
+/* Skeleton Loaders */
+#delivery-reference-style .skeleton-card {
+  height: 68px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, var(--mauve));
+  position: relative;
+  overflow: hidden;
+}
+
+#delivery-reference-style .skeleton-shimmer {
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--mauve) 40%, transparent), transparent);
+  animation: skeleton-shimmer-anim 1.5s infinite;
+}
+
+@keyframes skeleton-shimmer-anim {
+  100% { transform: translateX(100%); }
+}
+
+/* Calendar View */
+#delivery-reference-style .calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+  margin: 14px 0 20px;
+}
+
+#delivery-reference-style .calendar-day {
+  min-height: 70px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: transform 180ms ease, border-color 180ms ease;
+}
+
+#delivery-reference-style .calendar-day:hover {
+  border-color: var(--accent-text);
+  transform: translateY(-2px);
+}
+
+#delivery-reference-style .calendar-day.is-selected {
+  border-color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent-text) 14%, var(--surface));
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent-text) 25%, transparent);
+}
+
+#delivery-reference-style .calendar-day.is-today {
+  border-color: var(--coral);
+}
+
+#delivery-reference-style .calendar-day-header {
+  font-size: 11px;
+  font-weight: 500;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#delivery-reference-style .calendar-day-count {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 99px;
+  background: var(--coral);
+  color: var(--coral-ink);
+  font-weight: 700;
+}
+
+/* Notifications Bell & Dropdown */
+#delivery-reference-style .notif-trigger {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#delivery-reference-style .notif-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 99px;
+  background: var(--coral);
+  color: var(--coral-ink);
+  font-size: 9px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+#delivery-reference-style .notif-dropdown {
+  position: absolute;
+  top: 60px;
+  right: clamp(16px, 4vw, 38px);
+  z-index: 60;
+  width: min(380px, calc(100% - 32px));
+  max-height: 480px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 16px 45px #0006;
+  padding: 16px;
+}
+
+#delivery-reference-style .notif-item {
+  padding: 11px 12px;
+  border-radius: 9px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, var(--mauve));
+  font-size: 11px;
+}
+
+#delivery-reference-style .notif-item.is-unread {
+  border-left: 3px solid var(--accent-text);
+  background: color-mix(in srgb, var(--accent-text) 10%, var(--surface));
+}
+
+/* Sub-nav tabs (List / Calendar / History) */
+#delivery-reference-style .sub-nav-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+#delivery-reference-style .sub-nav-tab {
+  padding: 7px 13px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 160ms ease;
+}
+
+#delivery-reference-style .sub-nav-tab.is-active {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
+  box-shadow: 0 2px 8px #0002;
+}
+
+#delivery-reference-style[data-theme="light"] .sub-nav-tab.is-active {
+  color: #000000;
+  border-color: var(--line);
+  background: var(--surface-raised);
+}
+
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   #delivery-reference-style .stat,
@@ -1296,11 +1532,15 @@
   #delivery-reference-style .menu-overlay,
   #delivery-reference-style .menu-backdrop,
   #delivery-reference-style .menu-drawer,
-  #delivery-reference-style .menu-trigger span {
+  #delivery-reference-style .menu-trigger span,
+  #delivery-reference-style .delivery-progress-bar,
+  #delivery-reference-style .calendar-day {
     transition: none !important;
   }
   #delivery-reference-style .order-dialog,
-  #delivery-reference-style .details.is-activated {
+  #delivery-reference-style .details.is-activated,
+  #delivery-reference-style .skeleton-shimmer,
+  #delivery-reference-style .parcel-just-added {
     animation: none !important;
   }
 }

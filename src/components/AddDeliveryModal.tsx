@@ -19,6 +19,7 @@ export const AddDeliveryModal: React.FC<AddDeliveryModalProps> = ({
   const [courier, setCourier] = useState('auto');
   const [store, setStore] = useState('Amazon');
   const [item, setItem] = useState('');
+  const [customLabel, setCustomLabel] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,10 +36,9 @@ export const AddDeliveryModal: React.FC<AddDeliveryModalProps> = ({
     setStoreTip(check);
 
     if (courier === 'auto' && val.trim().length > 3) {
-      // preview detection
       const detected = detectCourier(val);
       if (detected !== 'other') {
-        // We leave selector on auto, but tip shows detected carrier
+        // Auto-detected
       }
     }
   };
@@ -74,6 +74,7 @@ export const AddDeliveryModal: React.FC<AddDeliveryModalProps> = ({
           courier: effectiveCourierKey,
           store: store.trim(),
           item: item.trim() || undefined,
+          customLabel: customLabel.trim() || undefined,
           imageUrl: imageUrl.trim() || undefined,
         }),
       });
@@ -88,6 +89,7 @@ export const AddDeliveryModal: React.FC<AddDeliveryModalProps> = ({
       // Reset form
       setTrackingNumber('');
       setItem('');
+      setCustomLabel('');
       setImageUrl('');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Could not add parcel.';
@@ -233,7 +235,7 @@ export const AddDeliveryModal: React.FC<AddDeliveryModalProps> = ({
 
             <div style={{ marginBottom: '14px' }}>
               <label htmlFor="modal-item-name" style={{ display: 'block', fontSize: '11px', color: 'var(--muted)', marginBottom: '5px' }}>
-                Item / Order Label (Optional)
+                Item / Product Name
               </label>
               <input
                 id="modal-item-name"
@@ -251,6 +253,31 @@ export const AddDeliveryModal: React.FC<AddDeliveryModalProps> = ({
                   fontSize: '12px',
                 }}
               />
+            </div>
+
+            <div style={{ marginBottom: '14px' }}>
+              <label htmlFor="modal-custom-label" style={{ display: 'block', fontSize: '11px', color: 'var(--muted)', marginBottom: '5px' }}>
+                Custom Order Tag / Label (Optional)
+              </label>
+              <input
+                id="modal-custom-label"
+                type="text"
+                value={customLabel}
+                onChange={(e) => setCustomLabel(e.target.value)}
+                placeholder="e.g. Birthday gift, College supplies, Urgent..."
+                style={{
+                  width: '100%',
+                  padding: '10px 11px',
+                  borderRadius: '8px',
+                  border: '1px solid var(--line)',
+                  background: 'var(--page)',
+                  color: 'var(--ink)',
+                  fontSize: '12px',
+                }}
+              />
+              <span style={{ display: 'block', marginTop: '4px', fontSize: '10px', color: 'var(--muted)' }}>
+                Helps organize and search your deliveries.
+              </span>
             </div>
 
             <div style={{ marginBottom: '18px' }}>

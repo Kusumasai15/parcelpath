@@ -4,14 +4,27 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Shipment, UserProfile, SupportTicket, PageViewId } from './types';
-import { calculateSummaryStats } from './utils/courier';
+import { Shipment, UserProfile, SupportTicket, InAppAlert, PageViewId } from './types';
+import {
+  calculateSummaryStats,
+  formatRelativeTime,
+  getShipmentProgress,
+  groupShipmentsByDate,
+  groupDeliveredByMonth,
+} from './utils/courier';
 import { AddDeliveryModal } from './components/AddDeliveryModal';
 import { OrderDetailsModal } from './components/OrderDetailsModal';
 import { ReportIssueModal } from './components/ReportIssueModal';
 import { EmailConnectModal } from './components/EmailConnectModal';
 import { AuthModal } from './components/AuthModal';
 import { usePWAInstall } from './hooks/usePWAInstall';
+
+const getLocalDateStr = (d = new Date()) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 export default function App() {
   // Theme state: dark mode preserved, light mode with beige surfaces and black text
@@ -26,6 +39,14 @@ export default function App() {
 
   const [activePage, setActivePage] = useState<PageViewId>('dashboard');
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Deliveries Sub-View: 'list' | 'calendar' | 'history' | 'today'
+  const [deliveriesSubView, setDeliveriesSubView] = useState<'list' | 'calendar' | 'history' | 'today'>('list');
+
+  // Selected date for calendar view (YYYY-MM-DD)
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string>(() => {
+    return getLocalDateStr();
+  });
 
   // Auth & Session
   const [sessionToken, setSessionToken] = useState<string | null>(() => {
@@ -44,6 +65,19 @@ export default function App() {
   const [selectedDeliveryId, setSelectedDeliveryId] = useState<string | null>(null);
   const [activeDetailShipment, setActiveDetailShipment] = useState<Shipment | null>(null);
 
+  // Just-added shipment ID for highlight animation
+  const [justAddedShipmentId, setJustAddedShipmentId] = useState<string | null>(null);
+
+  // Notifications state
+  const [alerts, setAlerts] = useState<InAppAlert[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [browserNotificationStatus, setBrowserNotificationStatus] = useState<string>(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      return Notification.permission;
+    }
+    return 'unsupported';
+  });
+
   // Modals state
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
@@ -55,9 +89,10 @@ export default function App() {
   // Tickets state
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
 
-  // Search & Filter state in All Deliveries
+  // Search & Filter state in All Deliveries / History
   const [searchQuery, setSearchQuery] = useState('');
   const [deliveryFilter, setDeliveryFilter] = useState('all');
+  const [historyCourierFilter, setHistoryCourierFilter] = useState('all');
 
   // Customer care config
   const [supportConfig, setSupportConfig] = useState({
@@ -99,6 +134,7 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (showNotifications) setShowNotifications(false);
         if (menuOpen) setMenuOpen(false);
         if (isDetailsOpen) setIsDetailsOpen(false);
         if (isAddOpen) setIsAddOpen(false);
@@ -109,7 +145,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [menuOpen, isDetailsOpen, isAddOpen, isReportOpen, isEmailConnectOpen, isAuthOpen]);
+  }, [menuOpen, isDetailsOpen, isAddOpen, isReportOpen, isEmailConnectOpen, isAuthOpen, showNotifications]);
 
   // Fetch current user profile
   const fetchUserProfile = useCallback(async () => {
@@ -156,6 +192,23 @@ export default function App() {
     }
   }, [sessionToken]);
 
+  // Fetch alerts
+  const fetchAlerts = useCallback(async () => {
+    try {
+      const res = await fetch('/api/notifications', {
+        headers: {
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAlerts(data.alerts || []);
+      }
+    } catch (e) {
+      console.error('Failed to load alerts:', e);
+    }
+  }, [sessionToken]);
+
   // Fetch tickets
   const fetchTickets = useCallback(async () => {
     try {
@@ -189,59 +242,104 @@ export default function App() {
   useEffect(() => {
     fetchUserProfile();
     fetchShipments();
+    fetchAlerts();
     fetchTickets();
     fetchSupportConfig();
-  }, [fetchUserProfile, fetchShipments, fetchTickets, fetchSupportConfig]);
+  }, [fetchUserProfile, fetchShipments, fetchAlerts, fetchTickets, fetchSupportConfig]);
 
   // Stats computation
   const stats = useMemo(() => {
     return calculateSummaryStats(shipments);
   }, [shipments]);
 
+  // Active shipments (excludes delivered)
+  const activeShipments = useMemo(() => {
+    return shipments.filter((s) => s.status !== 'Delivered');
+  }, [shipments]);
+
+  // Delivered shipments (for History)
+  const deliveredShipments = useMemo(() => {
+    return shipments.filter((s) => s.status === 'Delivered');
+  }, [shipments]);
+
+  // Shipments arriving today
+  const todayShipments = useMemo(() => {
+    const todayStr = getLocalDateStr();
+    return shipments.filter(
+      (s) =>
+        s.status !== 'Delivered' &&
+        (s.estimatedDate === todayStr ||
+          s.status === 'Out for delivery' ||
+          (s.eta && s.eta.toLowerCase().includes('today')))
+    );
+  }, [shipments]);
+
   // Filtered shipments for Dashboard
   const dashboardShipments = useMemo(() => {
     if (selectedStatFilter === 'active') {
-      return shipments.filter((s) => s.status !== 'Delivered');
+      return activeShipments;
     }
     if (selectedStatFilter === 'today') {
-      return shipments.filter(
-        (s) =>
-          s.status !== 'Delivered' &&
-          (s.status === 'Out for delivery' || (s.eta && s.eta.toLowerCase().includes('today')))
-      );
+      return todayShipments;
     }
     if (selectedStatFilter === 'attention') {
       return shipments.filter(
         (s) => s.status === 'Delivery attempted' || s.status === 'Delayed' || s.status === 'Exception'
       );
     }
-    return shipments;
-  }, [shipments, selectedStatFilter]);
+    return activeShipments;
+  }, [activeShipments, todayShipments, shipments, selectedStatFilter]);
 
-  // Filtered shipments for All Deliveries view
+  // Filtered shipments for All Deliveries list
   const allDeliveriesFiltered = useMemo(() => {
-    let list = shipments;
+    let list = activeShipments;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       list = list.filter(
         (s) =>
           s.item.toLowerCase().includes(q) ||
+          (s.customLabel && s.customLabel.toLowerCase().includes(q)) ||
           s.store.toLowerCase().includes(q) ||
           s.trackingNumber.toLowerCase().includes(q) ||
           s.courierName.toLowerCase().includes(q)
       );
     }
-    if (deliveryFilter === 'active') {
-      list = list.filter((s) => s.status !== 'Delivered');
-    } else if (deliveryFilter === 'delivered') {
-      list = list.filter((s) => s.status === 'Delivered');
-    } else if (deliveryFilter === 'attention') {
+    if (deliveryFilter === 'attention') {
       list = list.filter(
         (s) => s.status === 'Delivery attempted' || s.status === 'Delayed' || s.status === 'Exception'
       );
+    } else if (deliveryFilter === 'out_for_delivery') {
+      list = list.filter((s) => s.status === 'Out for delivery');
+    } else if (deliveryFilter === 'in_transit') {
+      list = list.filter((s) => s.status === 'In transit');
     }
     return list;
-  }, [shipments, searchQuery, deliveryFilter]);
+  }, [activeShipments, searchQuery, deliveryFilter]);
+
+  // Calendar groupings
+  const calendarGroupings = useMemo(() => {
+    return groupShipmentsByDate(activeShipments);
+  }, [activeShipments]);
+
+  // History grouped by month
+  const historyByMonth = useMemo(() => {
+    let list = deliveredShipments;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(
+        (s) =>
+          s.item.toLowerCase().includes(q) ||
+          (s.customLabel && s.customLabel.toLowerCase().includes(q)) ||
+          s.store.toLowerCase().includes(q) ||
+          s.trackingNumber.toLowerCase().includes(q) ||
+          s.courierName.toLowerCase().includes(q)
+      );
+    }
+    if (historyCourierFilter !== 'all') {
+      list = list.filter((s) => s.courier === historyCourierFilter);
+    }
+    return groupDeliveredByMonth(list);
+  }, [deliveredShipments, searchQuery, historyCourierFilter]);
 
   // Detail modal opener
   const handleOpenDetails = (shipment: Shipment, e?: React.MouseEvent<HTMLButtonElement>) => {
@@ -291,6 +389,76 @@ export default function App() {
       }
     } catch (e) {
       console.error('Failed to refresh shipment:', e);
+    }
+  };
+
+  // Update custom label
+  const handleUpdateLabel = async (shipmentId: string, newLabel: string) => {
+    try {
+      const res = await fetch(`/api/shipments/${shipmentId}/label`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+        },
+        body: JSON.stringify({ label: newLabel }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setShipments((prev) => prev.map((s) => (s.id === shipmentId ? data.shipment : s)));
+        if (activeDetailShipment?.id === shipmentId) {
+          setActiveDetailShipment(data.shipment);
+        }
+        setSettingsNotice('Custom label updated.');
+        setTimeout(() => setSettingsNotice(null), 3000);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Notifications: Mark as read
+  const handleMarkAlertRead = async (id: string) => {
+    try {
+      await fetch(`/api/notifications/${id}/read`, {
+        method: 'POST',
+        headers: {
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+        },
+      });
+      setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, read: true } : a)));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleMarkAllAlertsRead = async () => {
+    try {
+      await fetch('/api/notifications/mark-all-read', {
+        method: 'POST',
+        headers: {
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+        },
+      });
+      setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Request browser notification permission
+  const handleRequestBrowserNotifications = async () => {
+    if (!('Notification' in window)) {
+      alert('This browser does not support desktop notifications. In-app alerts remain active.');
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    setBrowserNotificationStatus(perm);
+    if (perm === 'granted') {
+      new Notification('ParcelPath Alerts Active', {
+        body: 'You will receive delivery updates when courier scans occur.',
+        icon: '/icon.svg',
+      });
     }
   };
 
@@ -349,7 +517,11 @@ export default function App() {
 
   // Delete Account
   const handleDeleteAccount = async () => {
-    if (!window.confirm('Are you sure you want to delete your account? All saved deliveries and tickets will be permanently deleted.')) {
+    if (
+      !window.confirm(
+        'Are you sure you want to delete your account? All saved deliveries and tickets will be permanently deleted.'
+      )
+    ) {
       return;
     }
     try {
@@ -388,6 +560,7 @@ export default function App() {
     } catch {}
     fetchShipments();
     fetchTickets();
+    fetchAlerts();
   };
 
   const navigateTo = (page: PageViewId) => {
@@ -395,12 +568,12 @@ export default function App() {
     setMenuOpen(false);
   };
 
+  const unreadAlertsCount = useMemo(() => {
+    return alerts.filter((a) => !a.read).length;
+  }, [alerts]);
+
   return (
-    <div
-      id="delivery-reference-style"
-      data-theme={theme}
-      className={menuOpen ? 'menu-open' : ''}
-    >
+    <div id="delivery-reference-style" data-theme={theme} className={menuOpen ? 'menu-open' : ''}>
       <div className="frame">
         {/* Topbar */}
         <header className="topbar">
@@ -430,6 +603,19 @@ export default function App() {
           </div>
 
           <div className="tools">
+            {/* Notification Bell */}
+            <button
+              className="notif-trigger"
+              type="button"
+              aria-label={`Alerts and notifications (${unreadAlertsCount} unread)`}
+              onClick={() => setShowNotifications(!showNotifications)}
+            >
+              🔔
+              {unreadAlertsCount > 0 && (
+                <span className="notif-badge">{unreadAlertsCount}</span>
+              )}
+            </button>
+
             {isInstallable && !isInstalled && (
               <button
                 className="pwa-install-btn"
@@ -441,6 +627,7 @@ export default function App() {
                 📥 Install
               </button>
             )}
+
             <button
               className="theme"
               type="button"
@@ -450,6 +637,7 @@ export default function App() {
             >
               {theme === 'light' ? '☾ Dark' : '☼ Light'}
             </button>
+
             <button
               className="avatar"
               type="button"
@@ -461,6 +649,96 @@ export default function App() {
             </button>
           </div>
         </header>
+
+        {/* Notifications Dropdown Panel */}
+        {showNotifications && (
+          <aside className="notif-dropdown" aria-label="Notifications panel">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <strong style={{ fontSize: '13px' }}>Delivery Alerts</strong>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {unreadAlertsCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleMarkAllAlertsRead}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--accent-text)', fontSize: '10px', cursor: 'pointer' }}
+                  >
+                    Mark all read
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowNotifications(false)}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--muted)', fontSize: '14px', cursor: 'pointer' }}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            {alerts.length === 0 ? (
+              <p style={{ fontSize: '11px', color: 'var(--muted)', textAlign: 'center', margin: '20px 0' }}>
+                No active delivery alerts.
+              </p>
+            ) : (
+              alerts.map((alert) => (
+                <div
+                  key={alert.id}
+                  className={`notif-item ${!alert.read ? 'is-unread' : ''}`}
+                  onClick={() => handleMarkAlertRead(alert.id)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
+                    <strong style={{ fontSize: '11px', color: 'var(--ink)' }}>{alert.title}</strong>
+                    <span style={{ fontSize: '9px', color: 'var(--muted)' }}>
+                      {formatRelativeTime(alert.createdAt)}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, color: 'var(--muted)', lineHeight: '1.4' }}>{alert.message}</p>
+                </div>
+              ))
+            )}
+
+            <div
+              style={{
+                marginTop: '12px',
+                paddingTop: '10px',
+                borderTop: '1px solid var(--line)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: '10px',
+              }}
+            >
+              <span style={{ color: 'var(--muted)' }}>
+                Browser alerts:{' '}
+                <strong>
+                  {browserNotificationStatus === 'granted'
+                    ? 'Enabled'
+                    : browserNotificationStatus === 'denied'
+                    ? 'Blocked'
+                    : 'Not enabled'}
+                </strong>
+              </span>
+              {browserNotificationStatus !== 'granted' && (
+                <button
+                  type="button"
+                  onClick={handleRequestBrowserNotifications}
+                  style={{
+                    padding: '4px 8px',
+                    borderRadius: '6px',
+                    background: 'var(--coral)',
+                    color: 'var(--coral-ink)',
+                    border: 'none',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Enable
+                </button>
+              )}
+            </div>
+          </aside>
+        )}
 
         {/* Slide-out Drawer Navigation */}
         <div className="menu-overlay" aria-hidden={!menuOpen}>
@@ -564,7 +842,7 @@ export default function App() {
           </aside>
         </div>
 
-        {/* Global Notifications / Status Banner if settings saved */}
+        {/* Global Notifications / Status Banner */}
         {settingsNotice && (
           <div
             style={{
@@ -665,17 +943,25 @@ export default function App() {
               <section aria-labelledby="deliveries-title">
                 <div className="section-head">
                   <h2 id="deliveries-title">
-                    Your deliveries {selectedStatFilter !== 'all' && `(${selectedStatFilter})`}
+                    {selectedStatFilter === 'today'
+                      ? 'Arriving Today'
+                      : selectedStatFilter === 'attention'
+                      ? 'Parcels Needing Attention'
+                      : 'Your deliveries'}
                   </h2>
                   <span className="updated">
-                    {shipments[0]?.lastUpdated ? `Updated ${shipments[0].lastUpdated}` : 'Updated a few minutes ago'}
+                    {shipments[0]?.lastRefreshedAt
+                      ? formatRelativeTime(shipments[0].lastRefreshedAt)
+                      : 'Updated recently'}
                   </span>
                 </div>
 
                 <div className="deliveries">
                   {loadingShipments ? (
-                    <div style={{ padding: '30px', textAlign: 'center', color: 'var(--muted)', fontSize: '12px' }}>
-                      Checking parcel statuses...
+                    <div style={{ display: 'grid', gap: '9px' }}>
+                      <div className="skeleton-card"><div className="skeleton-shimmer" /></div>
+                      <div className="skeleton-card"><div className="skeleton-shimmer" /></div>
+                      <div className="skeleton-card"><div className="skeleton-shimmer" /></div>
                     </div>
                   ) : dashboardShipments.length === 0 ? (
                     <div
@@ -688,7 +974,11 @@ export default function App() {
                         fontSize: '12px',
                       }}
                     >
-                      <p style={{ margin: '0 0 12px' }}>No parcels found in this view.</p>
+                      <p style={{ margin: '0 0 12px' }}>
+                        {selectedStatFilter === 'today'
+                          ? 'No shipments scheduled for delivery today.'
+                          : 'No parcels found in this view.'}
+                      </p>
                       <button className="add" type="button" onClick={() => setIsAddOpen(true)}>
                         ＋ Add tracking ID
                       </button>
@@ -699,11 +989,13 @@ export default function App() {
                       const isAlert =
                         shipment.status.toLowerCase().includes('attempted') ||
                         shipment.status.toLowerCase().includes('delayed');
+                      const progress = getShipmentProgress(shipment.status);
+                      const isJustAdded = shipment.id === justAddedShipmentId;
 
                       return (
                         <article
                           key={shipment.id}
-                          className={`delivery ${isSelected ? 'is-selected' : ''}`}
+                          className={`delivery ${isSelected ? 'is-selected' : ''} ${isJustAdded ? 'parcel-just-added' : ''}`}
                         >
                           <button
                             className="delivery-select"
@@ -723,19 +1015,44 @@ export default function App() {
                               )}
                             </span>
                             <span>
-                              <span className="product">{shipment.item}</span>
+                              <span className="product">
+                                {shipment.item}
+                                {shipment.customLabel && (
+                                  <span className="custom-label-badge">
+                                    🏷 {shipment.customLabel}
+                                  </span>
+                                )}
+                              </span>
                               <span className="meta">
                                 {shipment.store} · Tracking {shipment.trackingNumber}
                               </span>
+
+                              {/* Progress bar line */}
+                              <div className="delivery-progress">
+                                <div className="delivery-progress-track">
+                                  <div
+                                    className={`delivery-progress-bar ${progress.isAlert ? 'is-alert' : ''}`}
+                                    style={{ width: `${progress.percentage}%` }}
+                                  />
+                                </div>
+                                <span className="delivery-progress-label">{progress.label}</span>
+                              </div>
                             </span>
+
                             <span className={isAlert ? 'status alert' : 'status'}>
                               <i />
                               {shipment.status}
                             </span>
                             <span className="time">
-                              <span className="eta">{shipment.eta}</span>
+                              <span className="eta">
+                                {shipment.timeWindow || shipment.eta || 'Time not available'}
+                              </span>
                               <span className="meta">
-                                {isAlert ? 'A handoff may be needed' : 'Estimated arrival'}
+                                {shipment.timeWindow
+                                  ? 'Estimated window'
+                                  : isAlert
+                                  ? 'A handoff may be needed'
+                                  : 'Date only · Time unavailable'}
                               </span>
                             </span>
                           </button>
@@ -760,112 +1077,498 @@ export default function App() {
             </section>
           )}
 
-          {/* VIEW: ALL DELIVERIES */}
+          {/* VIEW: ALL DELIVERIES (List, Calendar, History tabs) */}
           {activePage === 'deliveries' && (
             <section className="page-view" data-page="deliveries">
               <div className="page-intro">
                 <h1>All deliveries</h1>
-                <p>View and manage every parcel saved to your account.</p>
+                <p>View active parcels, arrival calendar, and completed delivery history.</p>
               </div>
 
-              {/* Search & Filter Toolbar */}
-              <div
-                style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: '10px',
-                  alignItems: 'center',
-                  marginBottom: '20px',
-                }}
-              >
-                <input
-                  type="search"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by product, store, courier, or tracking ID..."
-                  style={{
-                    flex: '1 1 240px',
-                    padding: '9px 12px',
-                    borderRadius: '8px',
-                    border: '1px solid var(--line)',
-                    background: 'var(--surface)',
-                    color: 'var(--ink)',
-                    fontSize: '12px',
-                  }}
-                />
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  {(['all', 'active', 'attention', 'delivered'] as const).map((f) => (
-                    <button
-                      key={f}
-                      type="button"
-                      onClick={() => setDeliveryFilter(f)}
-                      style={{
-                        padding: '7px 11px',
-                        borderRadius: '7px',
-                        border: '1px solid var(--line)',
-                        background: deliveryFilter === f ? 'var(--coral)' : 'var(--surface)',
-                        color: deliveryFilter === f ? 'var(--coral-ink)' : 'var(--ink)',
-                        fontSize: '11px',
-                        fontWeight: deliveryFilter === f ? 600 : 400,
-                        textTransform: 'capitalize',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {f}
-                    </button>
-                  ))}
-                </div>
+              {/* Sub-nav tabs: List / Calendar / Delivery History */}
+              <div className="sub-nav-tabs" role="tablist">
+                <button
+                  className={`sub-nav-tab ${deliveriesSubView === 'list' ? 'is-active' : ''}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={deliveriesSubView === 'list'}
+                  onClick={() => setDeliveriesSubView('list')}
+                >
+                  List View ({activeShipments.length})
+                </button>
+                <button
+                  className={`sub-nav-tab ${deliveriesSubView === 'calendar' ? 'is-active' : ''}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={deliveriesSubView === 'calendar'}
+                  onClick={() => setDeliveriesSubView('calendar')}
+                >
+                  📅 Delivery Calendar
+                </button>
+                <button
+                  className={`sub-nav-tab ${deliveriesSubView === 'today' ? 'is-active' : ''}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={deliveriesSubView === 'today'}
+                  onClick={() => setDeliveriesSubView('today')}
+                >
+                  Arriving Today ({todayShipments.length})
+                </button>
+                <button
+                  className={`sub-nav-tab ${deliveriesSubView === 'history' ? 'is-active' : ''}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={deliveriesSubView === 'history'}
+                  onClick={() => setDeliveriesSubView('history')}
+                >
+                  📦 Delivery History ({deliveredShipments.length})
+                </button>
               </div>
 
-              <div className="settings-grid">
-                {allDeliveriesFiltered.length === 0 ? (
+              {/* 1. LIST VIEW */}
+              {deliveriesSubView === 'list' && (
+                <>
+                  {/* Search & Filter Toolbar */}
                   <div
                     style={{
-                      gridColumn: '1 / -1',
-                      padding: '30px',
-                      textAlign: 'center',
-                      color: 'var(--muted)',
-                      fontSize: '12px',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '10px',
+                      alignItems: 'center',
+                      marginBottom: '20px',
                     }}
                   >
-                    No shipments match your criteria.
+                    <input
+                      type="search"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search by product, custom label, store, courier, or AWB..."
+                      style={{
+                        flex: '1 1 240px',
+                        padding: '9px 12px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--line)',
+                        background: 'var(--surface)',
+                        color: 'var(--ink)',
+                        fontSize: '12px',
+                      }}
+                    />
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {(['all', 'attention', 'out_for_delivery', 'in_transit'] as const).map((f) => (
+                        <button
+                          key={f}
+                          type="button"
+                          onClick={() => setDeliveryFilter(f)}
+                          style={{
+                            padding: '7px 11px',
+                            borderRadius: '7px',
+                            border: '1px solid var(--line)',
+                            background: deliveryFilter === f ? 'var(--coral)' : 'var(--surface)',
+                            color: deliveryFilter === f ? 'var(--coral-ink)' : 'var(--ink)',
+                            fontSize: '11px',
+                            fontWeight: deliveryFilter === f ? 600 : 400,
+                            textTransform: 'capitalize',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {f.replace(/_/g, ' ')}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                ) : (
-                  allDeliveriesFiltered.map((s) => {
-                    const isAlert =
-                      s.status.toLowerCase().includes('attempted') || s.status.toLowerCase().includes('delayed');
 
-                    return (
-                      <article
-                        key={s.id}
-                        className="settings-card"
-                        style={{ cursor: 'pointer', position: 'relative' }}
-                        onClick={() => handleOpenDetails(s)}
+                  <div className="settings-grid">
+                    {allDeliveriesFiltered.length === 0 ? (
+                      <div
+                        style={{
+                          gridColumn: '1 / -1',
+                          padding: '30px',
+                          textAlign: 'center',
+                          color: 'var(--muted)',
+                          fontSize: '12px',
+                        }}
                       >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                          <h2 style={{ margin: '0 0 6px' }}>{s.item}</h2>
-                          <span style={{ fontSize: '10px', color: 'var(--accent-text)' }}>Details ↗</span>
+                        No active shipments match your search.
+                      </div>
+                    ) : (
+                      allDeliveriesFiltered.map((s) => {
+                        const isAlert =
+                          s.status.toLowerCase().includes('attempted') || s.status.toLowerCase().includes('delayed');
+                        const progress = getShipmentProgress(s.status);
+
+                        return (
+                          <article
+                            key={s.id}
+                            className="settings-card"
+                            style={{ cursor: 'pointer', position: 'relative' }}
+                            onClick={() => handleOpenDetails(s)}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                              <h2 style={{ margin: '0 0 4px' }}>
+                                {s.item}
+                                {s.customLabel && (
+                                  <span className="custom-label-badge">🏷 {s.customLabel}</span>
+                                )}
+                              </h2>
+                              <span style={{ fontSize: '10px', color: 'var(--accent-text)' }}>Details ↗</span>
+                            </div>
+
+                            <p className="meta" style={{ margin: '0 0 10px' }}>
+                              {s.store} ({s.courierName}) · Tracking {s.trackingNumber}
+                            </p>
+
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span className={isAlert ? 'status alert' : 'status'}>
+                                <i />
+                                {s.status}
+                              </span>
+                              <span style={{ fontSize: '10px', color: 'var(--muted)' }}>
+                                {formatRelativeTime(s.lastRefreshedAt)}
+                              </span>
+                            </div>
+
+                            {/* Progress bar line */}
+                            <div className="delivery-progress" style={{ marginTop: '12px' }}>
+                              <div className="delivery-progress-track">
+                                <div
+                                  className={`delivery-progress-bar ${progress.isAlert ? 'is-alert' : ''}`}
+                                  style={{ width: `${progress.percentage}%` }}
+                                />
+                              </div>
+                              <span className="delivery-progress-label">{progress.label}</span>
+                            </div>
+                          </article>
+                        );
+                      })
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* 2. CALENDAR VIEW */}
+              {deliveriesSubView === 'calendar' && (
+                <div>
+                  <p style={{ fontSize: '11px', color: 'var(--muted)', margin: '0 0 12px' }}>
+                    Select an estimated delivery date to view scheduled arrivals. Time zones are synchronized with your local time.
+                  </p>
+
+                  <div className="calendar-grid">
+                    {Array.from({ length: 7 }).map((_, idx) => {
+                      const d = new Date(Date.now() + (idx - 1) * 86400000);
+                      const dateKey = getLocalDateStr(d);
+                      const dayName = d.toLocaleDateString('en-US', { weekday: 'short' });
+                      const dayNum = d.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
+                      const dayParcels = calendarGroupings.byDate[dateKey] || [];
+                      const isToday = idx === 1;
+                      const isSelected = selectedCalendarDate === dateKey;
+
+                      return (
+                        <button
+                          key={dateKey}
+                          className={`calendar-day ${isToday ? 'is-today' : ''} ${isSelected ? 'is-selected' : ''}`}
+                          type="button"
+                          onClick={() => setSelectedCalendarDate(dateKey)}
+                        >
+                          <div className="calendar-day-header">
+                            <span>{dayName}</span>
+                            {dayParcels.length > 0 && (
+                              <span className="calendar-day-count">{dayParcels.length}</span>
+                            )}
+                          </div>
+                          <span style={{ fontSize: '12px', fontWeight: 600 }}>{dayNum}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <h3 style={{ fontSize: '14px', fontWeight: 500, margin: '16px 0 10px' }}>
+                    Arrivals on {new Date(selectedCalendarDate).toLocaleDateString('en-US', { dateStyle: 'full' })}:
+                  </h3>
+
+                  {(calendarGroupings.byDate[selectedCalendarDate] || []).length === 0 ? (
+                    <div
+                      style={{
+                        padding: '24px',
+                        borderRadius: '10px',
+                        border: '1px dashed var(--line)',
+                        color: 'var(--muted)',
+                        fontSize: '11px',
+                        textAlign: 'center',
+                        marginBottom: '20px',
+                      }}
+                    >
+                      No deliveries scheduled for this date.
+                    </div>
+                  ) : (
+                    <div className="deliveries" style={{ marginBottom: '20px' }}>
+                      {calendarGroupings.byDate[selectedCalendarDate].map((shipment) => (
+                        <article key={shipment.id} className="delivery">
+                          <button
+                            className="delivery-select"
+                            type="button"
+                            onClick={() => handleOpenDetails(shipment)}
+                          >
+                            <span className="merchant package-placeholder">📦</span>
+                            <span>
+                              <span className="product">
+                                {shipment.item}
+                                {shipment.customLabel && (
+                                  <span className="custom-label-badge">🏷 {shipment.customLabel}</span>
+                                )}
+                              </span>
+                              <span className="meta">{shipment.store} · {shipment.courierName}</span>
+                            </span>
+                            <span className="status">
+                              <i />
+                              {shipment.status}
+                            </span>
+                            <span className="time">
+                              <span className="eta">{shipment.timeWindow || shipment.eta || 'Time not available'}</span>
+                            </span>
+                          </button>
+                          <button
+                            className="details"
+                            type="button"
+                            onClick={(e) => handleOpenDetails(shipment, e)}
+                          >
+                            Details ↗
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Awaiting Delivery Date Section */}
+                  {calendarGroupings.awaitingDate.length > 0 && (
+                    <div style={{ marginTop: '24px' }}>
+                      <h3 style={{ fontSize: '13px', fontWeight: 500, color: 'var(--muted)', margin: '0 0 10px' }}>
+                        Awaiting delivery date ({calendarGroupings.awaitingDate.length})
+                      </h3>
+                      <div className="deliveries">
+                        {calendarGroupings.awaitingDate.map((shipment) => (
+                          <article key={shipment.id} className="delivery">
+                            <button
+                              className="delivery-select"
+                              type="button"
+                              onClick={() => handleOpenDetails(shipment)}
+                            >
+                              <span className="merchant package-placeholder">📦</span>
+                              <span>
+                                <span className="product">{shipment.item}</span>
+                                <span className="meta">{shipment.store} · {shipment.courierName}</span>
+                              </span>
+                              <span className="status">
+                                <i />
+                                {shipment.status}
+                              </span>
+                              <span className="time">
+                                <span className="eta">Carrier scan pending</span>
+                              </span>
+                            </button>
+                            <button
+                              className="details"
+                              type="button"
+                              onClick={(e) => handleOpenDetails(shipment, e)}
+                            >
+                              Details ↗
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 3. ARRIVING TODAY PANEL */}
+              {deliveriesSubView === 'today' && (
+                <div>
+                  <p style={{ fontSize: '11px', color: 'var(--muted)', margin: '0 0 14px' }}>
+                    Parcels scheduled for delivery today. Window estimates are provided directly by the courier.
+                  </p>
+                  {todayShipments.length === 0 ? (
+                    <div
+                      style={{
+                        padding: '30px',
+                        borderRadius: '12px',
+                        border: '1px dashed var(--line)',
+                        color: 'var(--muted)',
+                        fontSize: '11px',
+                        textAlign: 'center',
+                      }}
+                    >
+                      No parcels are scheduled to arrive today.
+                    </div>
+                  ) : (
+                    <div className="deliveries">
+                      {todayShipments.map((shipment) => (
+                        <article key={shipment.id} className="delivery">
+                          <button
+                            className="delivery-select"
+                            type="button"
+                            onClick={() => handleOpenDetails(shipment)}
+                          >
+                            <span className="merchant package-placeholder">📦</span>
+                            <span>
+                              <span className="product">
+                                {shipment.item}
+                                {shipment.customLabel && (
+                                  <span className="custom-label-badge">🏷 {shipment.customLabel}</span>
+                                )}
+                              </span>
+                              <span className="meta">{shipment.store} · {shipment.courierName}</span>
+                            </span>
+                            <span className="status">
+                              <i />
+                              {shipment.status}
+                            </span>
+                            <span className="time">
+                              <span className="eta">{shipment.timeWindow || 'Time not available'}</span>
+                              <span className="meta">
+                                {shipment.timeWindow ? 'Courier window' : 'Time not available'}
+                              </span>
+                            </span>
+                          </button>
+                          <button
+                            className="details"
+                            type="button"
+                            onClick={(e) => handleOpenDetails(shipment, e)}
+                          >
+                            Details ↗
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 4. DELIVERY HISTORY */}
+              {deliveriesSubView === 'history' && (
+                <div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '10px',
+                      alignItems: 'center',
+                      marginBottom: '16px',
+                    }}
+                  >
+                    <input
+                      type="search"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search completed deliveries..."
+                      style={{
+                        flex: '1 1 200px',
+                        padding: '8px 11px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--line)',
+                        background: 'var(--surface)',
+                        color: 'var(--ink)',
+                        fontSize: '11px',
+                      }}
+                    />
+                    <select
+                      value={historyCourierFilter}
+                      onChange={(e) => setHistoryCourierFilter(e.target.value)}
+                      style={{
+                        padding: '8px 10px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--line)',
+                        background: 'var(--surface)',
+                        color: 'var(--ink)',
+                        fontSize: '11px',
+                      }}
+                    >
+                      <option value="all">All Couriers</option>
+                      <option value="delhivery">Delhivery</option>
+                      <option value="bluedart">Blue Dart</option>
+                      <option value="ekart">Ekart</option>
+                      <option value="dtdc">DTDC</option>
+                    </select>
+                  </div>
+
+                  {Object.keys(historyByMonth).length === 0 ? (
+                    <div
+                      style={{
+                        padding: '30px',
+                        borderRadius: '12px',
+                        border: '1px dashed var(--line)',
+                        color: 'var(--muted)',
+                        fontSize: '11px',
+                        textAlign: 'center',
+                      }}
+                    >
+                      No delivered parcels recorded in history yet.
+                    </div>
+                  ) : (
+                    Object.entries(historyByMonth).map(([monthName, list]) => (
+                      <div key={monthName} style={{ marginBottom: '24px' }}>
+                        <h3
+                          style={{
+                            fontSize: '13px',
+                            fontWeight: 600,
+                            letterSpacing: '.04em',
+                            color: 'var(--accent-text)',
+                            margin: '0 0 10px',
+                          }}
+                        >
+                          {monthName} ({list.length})
+                        </h3>
+
+                        <div className="deliveries">
+                          {list.map((shipment) => (
+                            <article key={shipment.id} className="delivery">
+                              <button
+                                className="delivery-select"
+                                type="button"
+                                onClick={() => handleOpenDetails(shipment)}
+                              >
+                                <span className="merchant package-placeholder">✓</span>
+                                <span>
+                                  <span className="product">
+                                    {shipment.item}
+                                    {shipment.customLabel && (
+                                      <span className="custom-label-badge">🏷 {shipment.customLabel}</span>
+                                    )}
+                                  </span>
+                                  <span className="meta">{shipment.store} · {shipment.courierName}</span>
+                                </span>
+                                <span
+                                  className="status"
+                                  style={{
+                                    backgroundColor: 'rgba(72, 187, 120, 0.2)',
+                                    color: '#48bb78',
+                                  }}
+                                >
+                                  Delivered
+                                </span>
+                                <span className="time">
+                                  <span className="eta">{shipment.eta}</span>
+                                </span>
+                              </button>
+                              <button
+                                className="details"
+                                type="button"
+                                onClick={(e) => handleOpenDetails(shipment, e)}
+                              >
+                                Details ↗
+                              </button>
+                            </article>
+                          ))}
                         </div>
-                        <p className="meta" style={{ margin: '0 0 10px' }}>
-                          {s.store} ({s.courierName}) · Tracking {s.trackingNumber}
-                        </p>
-                        <p className={isAlert ? 'status alert' : 'status'}>
-                          <i />
-                          {s.status}
-                        </p>
-                        <p className="meta" style={{ marginTop: '10px' }}>
-                          {s.eta}
-                        </p>
-                      </article>
-                    );
-                  })
-                )}
-              </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
 
               <button
                 className="add"
                 type="button"
-                style={{ marginTop: '16px' }}
+                style={{ marginTop: '20px' }}
                 onClick={() => setIsAddOpen(true)}
               >
                 ＋ Add tracking ID
@@ -1198,6 +1901,18 @@ export default function App() {
                     Arrival reminders
                   </label>
 
+                  <div style={{ marginTop: '12px' }}>
+                    <button
+                      className="details"
+                      type="button"
+                      onClick={handleRequestBrowserNotifications}
+                    >
+                      {browserNotificationStatus === 'granted'
+                        ? '✓ Browser Notifications Active'
+                        : 'Enable Browser Web Push'}
+                    </button>
+                  </div>
+
                   <h2 style={{ marginTop: '20px' }}>Progressive Web App</h2>
                   <p className="support-copy">
                     {isInstalled
@@ -1250,16 +1965,16 @@ export default function App() {
                   <div>
                     <h2>Save multiple parcels</h2>
                     <p>
-                      Add tracking IDs from different shopping platforms. If you connect your email with permission, the website can match order emails and show product pictures automatically.
+                      Add tracking IDs from different shopping platforms. Add custom tags like “Birthday gift” or “Urgent” to organize them.
                     </p>
                   </div>
                 </article>
                 <article className="step">
                   <span className="step-number">3</span>
                   <div>
-                    <h2>Check delivery updates</h2>
+                    <h2>Check delivery updates &amp; calendar</h2>
                     <p>
-                      See courier status updates and estimated arrival windows when that tracking information is available. We never fabricate driver movement.
+                      See courier status updates, progress lines, and view scheduled deliveries on the interactive calendar.
                     </p>
                   </div>
                 </article>
@@ -1268,7 +1983,7 @@ export default function App() {
                   <div>
                     <h2>Plan the handoff</h2>
                     <p>
-                      Set delivery preferences or a backup recipient when the courier offers those options.
+                      Use “I won’t be home” to check official courier rescheduling policies or specify backup recipient preferences.
                     </p>
                   </div>
                 </article>
@@ -1277,7 +1992,7 @@ export default function App() {
                   <div>
                     <h2>Get help if something goes wrong</h2>
                     <p>
-                      Report a missed delivery or another parcel issue, or contact Customer Care.
+                      Report a missed delivery or another parcel issue directly from the order details, or contact Customer Care.
                     </p>
                   </div>
                 </article>
@@ -1293,6 +2008,8 @@ export default function App() {
         onClose={() => setIsAddOpen(false)}
         onSuccess={(newShipment) => {
           setShipments((prev) => [newShipment, ...prev]);
+          setJustAddedShipmentId(newShipment.id);
+          setTimeout(() => setJustAddedShipmentId(null), 1800);
           setSettingsNotice(`Saved new parcel: ${newShipment.item}`);
           setTimeout(() => setSettingsNotice(null), 3000);
         }}
@@ -1309,6 +2026,8 @@ export default function App() {
         }}
         onDeleteShipment={handleDeleteShipment}
         onRefreshShipment={handleRefreshShipment}
+        onUpdateLabel={handleUpdateLabel}
+        sessionToken={sessionToken}
       />
 
       <ReportIssueModal

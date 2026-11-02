@@ -18,48 +18,17 @@
   ],
   "shipments": [
     {
-      "item": "Mechanical Keyboard",
-      "store": "Amazon",
-      "trackingNumber": "123456789012",
-      "courier": "delhivery",
-      "courierName": "Delhivery",
-      "status": "In transit",
-      "eta": "Expected in 2-3 business days",
-      "location": "Carrier origin hub (Today)",
-      "events": [
-        {
-          "title": "Tracking record created",
-          "time": "Today, 07:06 AM",
-          "isDone": true
-        },
-        {
-          "title": "Electronic shipment data received",
-          "time": "Today, 07:06 AM",
-          "isDone": true
-        },
-        {
-          "title": "In transit to distribution center",
-          "time": "Awaiting courier scan",
-          "isDone": false
-        }
-      ],
-      "isArchived": false,
-      "isDemo": false,
-      "id": "ship_c9caa7b44b09",
-      "userId": "user_kusuma_default",
-      "lastUpdated": "Just now",
-      "createdAt": "2026-11-02T07:06:18.047Z"
-    },
-    {
       "id": "ship_4821",
       "userId": "user_kusuma_default",
       "item": "Wireless headphones",
+      "customLabel": "Urgent",
       "store": "Amazon",
       "trackingNumber": "…4821",
       "courier": "delhivery",
       "courierName": "Delhivery",
       "status": "Out for delivery",
       "eta": "Today, 2:30–3:15 PM",
+      "estimatedDate": "2026-11-02",
       "timeWindow": "Today, 2:30–3:15 PM",
       "location": "Local delivery hub (Today, 8:05 AM)",
       "events": [
@@ -81,19 +50,22 @@
       ],
       "isArchived": false,
       "isDemo": true,
-      "lastUpdated": "A few minutes ago",
-      "createdAt": "2026-11-01T07:03:17.188Z"
+      "lastRefreshedAt": "2026-11-02T07:05:00.000Z",
+      "courierEventTime": "Today, 10:42 AM",
+      "createdAt": "2026-11-01T07:15:00.000Z"
     },
     {
       "id": "ship_9034",
       "userId": "user_kusuma_default",
       "item": "Daily skincare set",
+      "customLabel": "Birthday gift",
       "store": "Nykaa",
       "trackingNumber": "…9034",
       "courier": "bluedart",
       "courierName": "Blue Dart",
       "status": "Delivery attempted",
       "eta": "Check available options",
+      "estimatedDate": "2026-11-02",
       "location": "Delivery center (Today, 11:15 AM)",
       "events": [
         {
@@ -114,19 +86,22 @@
       ],
       "isArchived": false,
       "isDemo": true,
-      "lastUpdated": "1 hour ago",
-      "createdAt": "2026-11-01T06:03:17.189Z"
+      "lastRefreshedAt": "2026-11-02T06:50:00.000Z",
+      "courierEventTime": "Today, 11:15 AM",
+      "createdAt": "2026-11-01T06:30:00.000Z"
     },
     {
       "id": "ship_1172",
       "userId": "user_kusuma_default",
       "item": "Cotton kurta",
+      "customLabel": "College supplies",
       "store": "Flipkart",
       "trackingNumber": "…1172",
       "courier": "ekart",
       "courierName": "Ekart Logistics",
       "status": "In transit",
       "eta": "Expected tomorrow",
+      "estimatedDate": "2026-11-03",
       "location": "Transit hub (Today, 7:45 AM)",
       "events": [
         {
@@ -147,11 +122,74 @@
       ],
       "isArchived": false,
       "isDemo": true,
-      "lastUpdated": "3 hours ago",
-      "createdAt": "2026-11-01T04:39:57.189Z"
+      "lastRefreshedAt": "2026-11-02T06:00:00.000Z",
+      "courierEventTime": "Today, 7:45 AM",
+      "createdAt": "2026-11-01T05:20:00.000Z"
+    },
+    {
+      "id": "ship_8801",
+      "userId": "user_kusuma_default",
+      "item": "Stainless steel water bottle",
+      "customLabel": "Personal",
+      "store": "Amazon",
+      "trackingNumber": "…8801",
+      "courier": "delhivery",
+      "courierName": "Delhivery",
+      "status": "Delivered",
+      "eta": "Delivered",
+      "estimatedDate": "2026-10-29",
+      "location": "Delivered to recipient / security",
+      "events": [
+        {
+          "title": "Order confirmed",
+          "time": "Oct 28, 10:00 AM",
+          "isDone": true
+        },
+        {
+          "title": "Out for delivery",
+          "time": "Oct 29, 9:15 AM",
+          "isDone": true
+        },
+        {
+          "title": "Delivered",
+          "time": "Oct 29, 2:40 PM",
+          "isDone": true
+        }
+      ],
+      "isArchived": false,
+      "isDemo": true,
+      "lastRefreshedAt": "2026-10-29T09:10:00.000Z",
+      "courierEventTime": "Oct 29, 2:40 PM",
+      "createdAt": "2026-10-28T04:30:00.000Z"
     }
   ],
   "tickets": [],
+  "alerts": [
+    {
+      "id": "alert_1",
+      "userId": "user_kusuma_default",
+      "shipmentId": "ship_4821",
+      "shipmentItem": "Wireless headphones",
+      "trackingNumber": "…4821",
+      "type": "out_for_delivery",
+      "title": "Out for delivery: Wireless headphones",
+      "message": "Delhivery courier is out for delivery. Estimated arrival window: Today, 2:30–3:15 PM.",
+      "read": false,
+      "createdAt": "2026-11-02T06:55:00.000Z"
+    },
+    {
+      "id": "alert_2",
+      "userId": "user_kusuma_default",
+      "shipmentId": "ship_9034",
+      "shipmentItem": "Daily skincare set",
+      "trackingNumber": "…9034",
+      "type": "attempt",
+      "title": "Delivery attempted: Daily skincare set",
+      "message": "Blue Dart attempted delivery at 11:15 AM. A handoff or reschedule may be needed.",
+      "read": false,
+      "createdAt": "2026-11-02T06:15:00.000Z"
+    }
+  ],
   "sessions": {
     "demo_session_token_kusuma": "user_kusuma_default"
   },

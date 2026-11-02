@@ -3,6 +3,7 @@ export interface CourierInfo {
   name: string;
   shortCode: string;
   trackingUrl: (trackingNumber: string) => string;
+  reschedulingUrl?: (trackingNumber: string) => string;
 }
 
 export const SUPPORTED_COURIERS: Record<string, CourierInfo> = {
@@ -11,18 +12,21 @@ export const SUPPORTED_COURIERS: Record<string, CourierInfo> = {
     name: 'Delhivery',
     shortCode: 'DEL',
     trackingUrl: (awb) => `https://www.delhivery.com/track/package/${awb}`,
+    reschedulingUrl: (awb) => `https://www.delhivery.com/support?awb=${awb}`,
   },
   bluedart: {
     id: 'bluedart',
     name: 'Blue Dart',
     shortCode: 'BD',
     trackingUrl: (awb) => `https://www.bluedart.com/tracking?trackNumber=${awb}`,
+    reschedulingUrl: (awb) => `https://www.bluedart.com/contact-us`,
   },
   dtdc: {
     id: 'dtdc',
     name: 'DTDC',
     shortCode: 'DTDC',
     trackingUrl: (awb) => `https://www.dtdc.in/tracking/shipment-tracking.asp?strCnno=${awb}`,
+    reschedulingUrl: (awb) => `https://www.dtdc.in/query.asp`,
   },
   ekart: {
     id: 'ekart',
@@ -53,6 +57,7 @@ export const SUPPORTED_COURIERS: Record<string, CourierInfo> = {
     name: 'Amazon Shipping',
     shortCode: 'AMZ',
     trackingUrl: (awb) => `https://track.amazon.in/tracking/${awb}`,
+    reschedulingUrl: (awb) => `https://www.amazon.in/your-orders`,
   },
   other: {
     id: 'other',
@@ -216,4 +221,114 @@ export function calculateSummaryStats(shipments: Array<{ status: string; eta?: s
   }
 
   return { activeCount, todayCount, attentionCount };
+}
+
+/**
+ * Formats elapsed time since last successful tracking refresh.
+ * Guaranteed to compute based on real ISO timestamp so page reloads don't reset to "just now".
+ */
+export function formatRelativeTime(isoString?: string): string {
+  if (!isoString) return 'Updated recently';
+  const timestamp = new Date(isoString).getTime();
+  if (isNaN(timestamp)) return 'Updated recently';
+
+  const diffMs = Date.now() - timestamp;
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 45) return 'Updated just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `Updated ${diffMin} ${diffMin === 1 ? 'minute' : 'minutes'} ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `Updated ${diffHr} ${diffHr === 1 ? 'hour' : 'hours'} ago`;
+  const diffDays = Math.floor(diffHr / 24);
+  return `Updated ${diffDays} ${diffDays === 1 ? 'day' : 'days'} ago`;
+}
+
+export interface ShipmentProgress {
+  stage: 'confirmed' | 'in_transit' | 'out_for_delivery' | 'delivered';
+  percentage: number;
+  isAlert: boolean;
+  label: string;
+}
+
+/**
+ * Calculates a progress step based on actual parcel status.
+ * Never falsely marks progress as completed if delayed or attempted.
+ */
+export function getShipmentProgress(status: string): ShipmentProgress {
+  const norm = status.toLowerCase();
+
+  if (norm.includes('delivered')) {
+    return { stage: 'delivered', percentage: 100, isAlert: false, label: 'Delivered' };
+  }
+
+  if (norm.includes('out for delivery')) {
+    return { stage: 'out_for_delivery', percentage: 75, isAlert: false, label: 'Out for delivery' };
+  }
+
+  if (norm.includes('attempted')) {
+    return { stage: 'out_for_delivery', percentage: 75, isAlert: true, label: 'Delivery attempted' };
+  }
+
+  if (norm.includes('delayed') || norm.includes('exception')) {
+    return { stage: 'in_transit', percentage: 45, isAlert: true, label: 'Transit delayed' };
+  }
+
+  if (norm.includes('transit') || norm.includes('shipped')) {
+    return { stage: 'in_transit', percentage: 45, isAlert: false, label: 'In transit' };
+  }
+
+  return { stage: 'confirmed', percentage: 15, isAlert: false, label: 'Order confirmed' };
+}
+
+/**
+ * Groups delivered shipments by human-readable month string (e.g., "November 2026")
+ */
+export function groupDeliveredByMonth<T extends { status: string; createdAt: string }>(
+  shipments: T[]
+): Record<string, T[]> {
+  const groups: Record<string, T[]> = {};
+
+  const deliveredOnly = shipments.filter((s) => s.status === 'Delivered');
+
+  for (const s of deliveredOnly) {
+    const d = new Date(s.createdAt);
+    const monthKey = !isNaN(d.getTime())
+      ? d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+      : 'Previous Deliveries';
+
+    if (!groups[monthKey]) {
+      groups[monthKey] = [];
+    }
+    groups[monthKey].push(s);
+  }
+
+  return groups;
+}
+
+/**
+ * Groups active shipments by estimated arrival date (YYYY-MM-DD).
+ */
+export function groupShipmentsByDate<T extends { estimatedDate?: string; eta?: string; status: string }>(
+  shipments: T[]
+): {
+  byDate: Record<string, T[]>;
+  awaitingDate: T[];
+} {
+  const byDate: Record<string, T[]> = {};
+  const awaitingDate: T[] = [];
+
+  for (const s of shipments) {
+    if (s.status === 'Delivered') continue;
+
+    if (s.estimatedDate && /^\d{4}-\d{2}-\d{2}$/.test(s.estimatedDate)) {
+      if (!byDate[s.estimatedDate]) {
+        byDate[s.estimatedDate] = [];
+      }
+      byDate[s.estimatedDate].push(s);
+    } else {
+      awaitingDate.push(s);
+    }
+  }
+
+  return { byDate, awaitingDate };
 }

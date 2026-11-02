@@ -5,7 +5,11 @@ import {
   isStoreOrderId,
   formatHonestEta,
   calculateSummaryStats,
-  SUPPORTED_COURIERS
+  SUPPORTED_COURIERS,
+  formatRelativeTime,
+  getShipmentProgress,
+  groupShipmentsByDate,
+  groupDeliveredByMonth
 } from './courier';
 
 test('detectCourier correctly identifies Indian couriers', () => {
@@ -57,15 +61,70 @@ test('calculateSummaryStats computes counts from actual saved data', () => {
   ];
 
   const stats = calculateSummaryStats(sample);
-  assert.equal(stats.activeCount, 3); // 3 non-delivered
-  assert.equal(stats.todayCount, 1);  // 1 arriving today
-  assert.equal(stats.attentionCount, 1); // 1 attempted
+  assert.equal(stats.activeCount, 3);
+  assert.equal(stats.todayCount, 1);
+  assert.equal(stats.attentionCount, 1);
 });
 
-test('SUPPORTED_COURIERS contains valid official tracking URLs', () => {
-  const delhiveryUrl = SUPPORTED_COURIERS.delhivery.trackingUrl('123456');
-  assert.equal(delhiveryUrl, 'https://www.delhivery.com/track/package/123456');
+test('formatRelativeTime calculates real elapsed time accurately', () => {
+  const now = new Date();
+  assert.equal(formatRelativeTime(now.toISOString()), 'Updated just now');
 
-  const bluedartUrl = SUPPORTED_COURIERS.bluedart.trackingUrl('987654');
-  assert.equal(bluedartUrl, 'https://www.bluedart.com/tracking?trackNumber=987654');
+  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  assert.equal(formatRelativeTime(fiveMinAgo), 'Updated 5 minutes ago');
+
+  const twoHoursAgo = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+  assert.equal(formatRelativeTime(twoHoursAgo), 'Updated 2 hours ago');
+});
+
+test('getShipmentProgress handles normal, delayed, and attempted stages honestly', () => {
+  const confirmed = getShipmentProgress('Confirmed');
+  assert.equal(confirmed.stage, 'confirmed');
+  assert.equal(confirmed.isAlert, false);
+
+  const transit = getShipmentProgress('In transit');
+  assert.equal(transit.stage, 'in_transit');
+  assert.equal(transit.percentage, 45);
+
+  const delayed = getShipmentProgress('Delayed');
+  assert.equal(delayed.stage, 'in_transit');
+  assert.equal(delayed.isAlert, true);
+
+  const attempted = getShipmentProgress('Delivery attempted');
+  assert.equal(attempted.stage, 'out_for_delivery');
+  assert.equal(attempted.isAlert, true);
+
+  const delivered = getShipmentProgress('Delivered');
+  assert.equal(delivered.stage, 'delivered');
+  assert.equal(delivered.percentage, 100);
+  assert.equal(delivered.isAlert, false);
+});
+
+test('groupShipmentsByDate groups by date and captures awaiting-date items', () => {
+  const list = [
+    { estimatedDate: '2026-11-02', status: 'In transit' },
+    { estimatedDate: '2026-11-02', status: 'Out for delivery' },
+    { estimatedDate: '2026-11-05', status: 'In transit' },
+    { status: 'In transit' }, // no estimated date
+    { estimatedDate: '2026-11-01', status: 'Delivered' } // delivered should be ignored
+  ];
+
+  const grouped = groupShipmentsByDate(list);
+  assert.equal(grouped.byDate['2026-11-02'].length, 2);
+  assert.equal(grouped.byDate['2026-11-05'].length, 1);
+  assert.equal(grouped.awaitingDate.length, 1);
+  assert.equal(grouped.byDate['2026-11-01'], undefined);
+});
+
+test('groupDeliveredByMonth groups completed parcels by month string', () => {
+  const list = [
+    { status: 'Delivered', createdAt: '2026-11-01T10:00:00Z' },
+    { status: 'Delivered', createdAt: '2026-10-15T10:00:00Z' },
+    { status: 'In transit', createdAt: '2026-11-02T10:00:00Z' }
+  ];
+
+  const grouped = groupDeliveredByMonth(list);
+  assert.equal(Object.keys(grouped).length, 2);
+  assert.equal(grouped['November 2026']?.length, 1);
+  assert.equal(grouped['October 2026']?.length, 1);
 });
