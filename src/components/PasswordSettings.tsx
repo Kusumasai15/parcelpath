@@ -24,7 +24,7 @@ function PasswordField({ label, value, onChange, autoComplete }: {
   </div>;
 }
 
-export function PasswordSettings({ token, onChanged }: { token: string; onChanged: () => void }) {
+export function PasswordSettings({ token, onChanged, onSignIn }: { token: string | null; onChanged: () => void; onSignIn: () => void }) {
   const [current, setCurrent] = useState('');
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -32,7 +32,7 @@ export function PasswordSettings({ token, onChanged }: { token: string; onChange
   const [busy, setBusy] = useState(false);
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || !token) return;
     setError('');
     if (password !== confirmation) { setError('The new passwords do not match.'); return; }
     setBusy(true);
@@ -51,8 +51,12 @@ export function PasswordSettings({ token, onChanged }: { token: string; onChange
   return <article className="settings-card">
     <h2>Change password</h2>
     <p className="support-copy">Use 12–128 characters. Changing your password signs out all sessions. Then sign in with your new password.</p>
+    {!token && <div className="support-copy">
+      <p>Sign in to your account to change your password.</p>
+      <div className="simple-actions"><button type="button" className="primary" onClick={onSignIn}>Sign in to change password</button></div>
+    </div>}
     <form onSubmit={submit}>
-      <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+      <fieldset disabled={busy || !token} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <PasswordField label="Current password" value={current} onChange={setCurrent} autoComplete="current-password" />
         <PasswordField label="New password" value={password} onChange={setPassword} autoComplete="new-password" />
         <PasswordField label="Confirm new password" value={confirmation} onChange={setConfirmation} autoComplete="new-password" />
