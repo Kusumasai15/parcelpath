@@ -2,7 +2,7 @@
 
 ### Your deliveries, all in one place.
 
-[🚀 Open ParcelPath — Live Demo](https://parcelpath-3kbwfkqab-design-f2ab.vercel.app/)
+[🚀 Open ParcelPath — Live Demo](https://parcelpath-brown.vercel.app/)
 
 **Hosted on Vercel · React · TypeScript · Express**
 
@@ -10,7 +10,7 @@
 
 ParcelPath is a delivery-management web application designed around a familiar problem: orders arrive from different stores, tracking information is scattered, and delivery updates are easy to miss. It brings saved shipments, a delivery calendar, order details, preferences, and customer-care requests into one interface.
 
-> **Project status:** Deployed prototype on Vercel. The implementation notes below describe the uploaded source snapshot; deployment does not by itself complete its backend integrations. Live courier tracking, Gmail scanning, durable cloud storage, and production authentication still require implementation. The included shipment examples are demonstration data.
+> **Project status:** Deployed prototype on Vercel. The implementation notes below describe the current prototype; deployment does not by itself complete its backend integrations. Live courier tracking, Gmail scanning, durable cloud storage, and production authentication hardening still require implementation. The included shipment examples are demonstration data.
 
 ## ✨ Experience
 
@@ -32,16 +32,28 @@ ParcelPath is a delivery-management web application designed around a familiar p
 | Shipment management | Express endpoints backed by a JSON-file database |
 | Courier identification | Tracking-number pattern heuristics and carrier links; detection is not proof that a parcel exists |
 | Customer Care | Editable contact form, issue selection, ticket creation, and attachment metadata/data storage |
-| Account management | Custom registration, login, sessions, profile updates, and deletion endpoints; includes demo fallback |
+| Account management | Custom registration, login, server-side session revocation on sign-out, profile updates, and deletion endpoints; automatic demo access removed |
 | Notifications | Stored in-app alerts, test alerts, and browser permission/display controls; no complete background push pipeline |
 | Live tracking | No outbound courier API integration; adding credentials alone does not enable live tracking |
 | Delivery estimates | Seeded/generated prototype values, not verified carrier estimates |
 | Gmail product photos | Connection UI and placeholder state changes; no completed OAuth exchange, Gmail scan, or photo extraction |
 | Rescheduling | Returns carrier portal links; does not book or confirm a new delivery slot |
 | Cloud database and attachments | Not connected; database/storage environment variables are placeholders |
-| Deployment | Deployed on Vercel; live URL supplied by the project owner. End-to-end behavior has not been independently verified |
+| Deployment | Deployed on Vercel; registration, login, session revocation, and rejection of unauthenticated requests verified against the live API |
 
 **Tracking accuracy:** The current create-shipment endpoint generates initial events, a location, and an estimated date without contacting a courier. Manual refresh and the scheduled job update timestamps without fetching carrier events. These must be replaced with verified provider responses before presenting the product as live tracking.
+
+## Recent improvements
+
+- **Reliable sign-out:** Clears account-specific data and the saved browser token, revokes the active session on the server, and prevents pending profile or delivery requests from restoring signed-out state.
+- **No automatic demo login:** Unauthenticated requests and the old demo token are rejected. The demo-account button has been removed.
+- **Password visibility:** An eye control lets users show or hide the password while entering it.
+- **Vercel API fix:** Corrected the server module import in the API entry point so authentication requests can reach Express.
+- **Stable production link:** Use [parcelpath-brown.vercel.app](https://parcelpath-brown.vercel.app/) for the latest production release; older deployment-specific links may still show earlier versions.
+
+### Verification
+
+Type checking and the production build passed, along with all 12 existing courier/support utility tests. Live API checks verified registration, login, authenticated profile access, sign-out, rejection of the revoked session, and rejection of unauthenticated or legacy-demo requests. The temporary verification account was deleted after testing. These checks do not constitute a full browser test or production security audit.
 
 ## 🛠 Technology
 
@@ -61,9 +73,9 @@ Firebase is not currently integrated. The Gemini SDK is listed as a dependency, 
 
 ## 🚀 Open the website
 
-Visit [ParcelPath](https://parcelpath-3kbwfkqab-design-f2ab.vercel.app/) in your browser. No local installation or localhost server is required to access the hosted website.
+Visit [ParcelPath](https://parcelpath-brown.vercel.app/) in your browser. No local installation or localhost server is required to access the hosted website.
 
-Explore the dashboard, delivery views, themes, and customer-care interface. The source snapshot includes demo access and generated shipment records; use synthetic information while the production integrations are being completed.
+Explore the dashboard, delivery views, themes, and customer-care interface. Create an account to manage your saved deliveries. Automatic demo access and the demo-account button have been removed. Shipment tracking still uses generated prototype data; use synthetic information while production integrations are being completed.
 
 ## Configuration
 
@@ -85,7 +97,7 @@ ParcelPath is hosted on Vercel at the live-demo link above. The repository conta
 
 ### Before using real customer data
 
-1. **Replace prototype authentication.** Remove the shared demo-user fallback and fixed demo session. Replace the current fixed-salt SHA-256 password hashing with a suitable authentication service or password-hashing implementation, add session expiry, and ensure profile responses never return password hashes.
+1. **Harden prototype authentication.** Automatic demo access has been removed and sign-out now revokes the active session. Replace the current fixed-salt SHA-256 password hashing with a suitable authentication service or password-hashing implementation, add session expiry, and ensure profile responses never return password hashes.
 2. **Implement durable storage.** `src/server/db.ts` writes to `data/db.json` locally and `/tmp/parcelpath-data` when `VERCEL` is set. This is not a shared, durable database. Adding `DATABASE_URL` alone does not change it.
 3. **Implement private attachment storage.** Screenshots currently live as base64 data in ticket records. A Blob token alone does not upload them to Blob storage. Validate actual file bytes and enforce attachment access controls.
 4. **Finish data integrations.** Implement courier requests and truthful refresh results. Complete Gmail authorization and scanning before reporting email as connected.
@@ -143,7 +155,8 @@ References: [Vite on Vercel](https://vercel.com/docs/frameworks/frontend/vite) �
 - [ ] Complete optional Gmail OAuth and product-photo matching.
 - [ ] Implement event-driven notifications and background push subscriptions.
 - [ ] Validate offline behavior and installation across supported browsers.
-- [ ] Complete end-to-end deployment verification with synthetic test accounts.
+- [x] Verify registration, login, and logout against the deployed API using a temporary test account.
+- [ ] Complete browser end-to-end verification of shipment, support, and account flows.
 
 ## Contributing
 
