@@ -39,19 +39,9 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
 
   if (token) {
     const user = db.getUserBySession(token);
-    if (user) {
+    if (user && user.id !== 'user_kusuma_default') {
       req.user = user;
       req.sessionToken = token;
-      return next();
-    }
-  }
-
-  // Fallback to default demo user if demo token provided or for easy preview exploration
-  if (req.headers['x-allow-demo'] === 'true' || !token) {
-    const defaultUser = db.getUserById('user_kusuma_default');
-    if (defaultUser) {
-      req.user = defaultUser;
-      req.sessionToken = 'demo_session_token_kusuma';
       return next();
     }
   }
@@ -146,10 +136,13 @@ app.put('/api/auth/profile', authMiddleware, (req: Request, res: Response) => {
   return res.json({ user: updated });
 });
 
-app.post('/api/auth/logout', authMiddleware, (req: Request, res: Response) => {
-  if (req.sessionToken) {
-    db.removeSession(req.sessionToken);
-  }
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  const authorization = req.headers.authorization;
+  const token = authorization?.startsWith('Bearer ')
+    ? authorization.slice(7)
+    : req.headers['x-session-token'];
+  if (typeof token === 'string' && token) db.removeSession(token);
+  res.setHeader('Cache-Control', 'no-store');
   return res.json({ success: true });
 });
 
