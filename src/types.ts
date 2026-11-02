@@ -44,19 +44,47 @@ export interface UserProfile {
   role: 'user' | 'staff' | 'admin';
 }
 
+export type SupportTicketCategory =
+  | 'delivery_delayed'
+  | 'missed_delivery'
+  | 'delivered_not_received'
+  | 'damaged_parcel'
+  | 'wrong_item_received'
+  | 'tracking_not_updating'
+  | 'incorrect_delivery_info'
+  | 'website_account_issue'
+  | 'other'
+  | 'delayed'
+  | 'incorrect_status'
+  | 'website_issue'
+  | 'general_feedback';
+
 export interface SupportTicket {
   id: string;
   ticketRef: string;
   userId: string;
   userEmail: string;
   userName: string;
+  contactName?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  contactWhatsapp?: string;
+  preferredContactMethod?: 'email' | 'phone' | 'whatsapp';
   shipmentId?: string;
   shipmentLabel?: string;
-  category: 'delayed' | 'incorrect_status' | 'missed_delivery' | 'delivered_not_received' | 'website_issue' | 'general_feedback';
+  trackingNumber?: string;
+  courier?: string;
+  isManualTracking?: boolean;
+  category: SupportTicketCategory | string;
+  categoryLabel?: string;
   subject: string;
   description: string;
   status: 'Open' | 'In review' | 'Resolved';
   staffReply?: string;
+  attachmentName?: string;
+  attachmentDataUrl?: string;
+  attachmentSize?: number;
+  attachmentType?: string;
   createdAt: string;
 }
 

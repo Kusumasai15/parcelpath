@@ -18,43 +18,6 @@
   ],
   "shipments": [
     {
-      "id": "ship_4821",
-      "userId": "user_kusuma_default",
-      "item": "Wireless headphones",
-      "customLabel": "Urgent",
-      "store": "Amazon",
-      "trackingNumber": "…4821",
-      "courier": "delhivery",
-      "courierName": "Delhivery",
-      "status": "Out for delivery",
-      "eta": "Today, 2:30–3:15 PM",
-      "estimatedDate": "2026-11-02",
-      "timeWindow": "Today, 2:30–3:15 PM",
-      "location": "Local delivery hub (Today, 8:05 AM)",
-      "events": [
-        {
-          "title": "Order confirmed",
-          "time": "Yesterday, 3:15 PM",
-          "isDone": true
-        },
-        {
-          "title": "Reached local delivery hub",
-          "time": "Today, 8:05 AM",
-          "isDone": true
-        },
-        {
-          "title": "Out for delivery",
-          "time": "Today, 10:42 AM",
-          "isDone": true
-        }
-      ],
-      "isArchived": false,
-      "isDemo": true,
-      "lastRefreshedAt": "2026-11-02T07:05:00.000Z",
-      "courierEventTime": "Today, 10:42 AM",
-      "createdAt": "2026-11-01T07:15:00.000Z"
-    },
-    {
       "id": "ship_9034",
       "userId": "user_kusuma_default",
       "item": "Daily skincare set",
@@ -86,7 +49,7 @@
       ],
       "isArchived": false,
       "isDemo": true,
-      "lastRefreshedAt": "2026-11-02T06:50:00.000Z",
+      "lastRefreshedAt": "2026-11-02T10:09:46.916Z",
       "courierEventTime": "Today, 11:15 AM",
       "createdAt": "2026-11-01T06:30:00.000Z"
     },
@@ -163,8 +126,75 @@
       "createdAt": "2026-10-28T04:30:00.000Z"
     }
   ],
-  "tickets": [],
+  "tickets": [
+    {
+      "id": "tkt_57d8e0c5044b",
+      "ticketRef": "TKT-9942-2026",
+      "userId": "user_kusuma_default",
+      "userEmail": "saddikutikusumasai@gmail.com",
+      "userName": "Kusuma",
+      "contactName": "Kusuma",
+      "contactEmail": "saddikutikusumasai@gmail.com",
+      "contactPhone": "",
+      "contactWhatsapp": "",
+      "preferredContactMethod": "email",
+      "isManualTracking": false,
+      "category": "general_feedback",
+      "categoryLabel": "Product Feedback",
+      "subject": "User Feedback: Overall Experience (5★)",
+      "description": "[Rating: 5/5 stars | Topic: Overall Experience]\n\nThe new delivery calendar and Customer Care layout look fantastic. Clear, responsive, and easy to use.",
+      "status": "Open",
+      "createdAt": "2026-11-02T10:20:15.829Z"
+    },
+    {
+      "id": "tkt_376069424a78",
+      "ticketRef": "TKT-3055-2026",
+      "userId": "user_kusuma_default",
+      "userEmail": "saddikutikusumasai@gmail.com",
+      "userName": "Kusuma",
+      "contactName": "Kusuma",
+      "contactEmail": "saddikutikusumasai@gmail.com",
+      "contactPhone": "+91 98765 43210",
+      "contactWhatsapp": "+91 98765 43210",
+      "preferredContactMethod": "whatsapp",
+      "shipmentId": "ship_9034",
+      "shipmentLabel": "Daily skincare set (…9034)",
+      "trackingNumber": "…9034",
+      "courier": "bluedart",
+      "isManualTracking": false,
+      "category": "delivery_delayed",
+      "categoryLabel": "Delivery delayed",
+      "subject": "Delivery delayed — Daily skincare set (…9034)",
+      "description": "The delivery courier marked an attempt at 11:15 AM today but did not call or leave a slip at the security desk. Please assist with redelivery instructions.",
+      "status": "Open",
+      "createdAt": "2026-11-02T10:18:55.000Z"
+    }
+  ],
   "alerts": [
+    {
+      "userId": "user_kusuma_default",
+      "shipmentId": "ship_9034",
+      "shipmentItem": "Daily skincare set",
+      "trackingNumber": "…9034",
+      "type": "out_for_delivery",
+      "title": "Out for delivery: Daily skincare set",
+      "message": "Delhivery courier is out for delivery. Estimated arrival: Today, 2:30–3:15 PM.",
+      "read": false,
+      "id": "alert_bd81b6c61f24",
+      "createdAt": "2026-11-02T10:33:59.311Z"
+    },
+    {
+      "userId": "user_kusuma_default",
+      "shipmentId": "ship_9034",
+      "shipmentItem": "Daily skincare set",
+      "trackingNumber": "…9034",
+      "type": "out_for_delivery",
+      "title": "Out for delivery: Daily skincare set",
+      "message": "Delhivery courier is out for delivery. Estimated arrival: Today, 2:30–3:15 PM.",
+      "read": false,
+      "id": "alert_7bdb63ca985d",
+      "createdAt": "2026-11-02T10:33:21.728Z"
+    },
     {
       "id": "alert_1",
       "userId": "user_kusuma_default",

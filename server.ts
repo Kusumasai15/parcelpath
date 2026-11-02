@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { db, User, Shipment, TrackingEvent } from './src/server/db.js';
 import { detectCourier, isStoreOrderId, SUPPORTED_COURIERS, formatHonestEta } from './src/utils/courier.js';
+import { isShipmentRequiredForCategory, getCategoryLabel, validateAttachment } from './src/utils/support.js';
 
 dotenv.config();
 
@@ -13,7 +14,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // Extend express Request to include currentUser
 declare global {
@@ -375,6 +376,23 @@ app.delete('/api/notifications', authMiddleware, (req: Request, res: Response) =
   return res.json({ success: true });
 });
 
+app.post('/api/notifications/test', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const shipments = db.getShipmentsForUser(user.id);
+  const target = shipments[0];
+  const testAlert = db.addAlert({
+    userId: user.id,
+    shipmentId: target?.id || 'ship_test',
+    shipmentItem: target?.item || 'Wireless headphones',
+    trackingNumber: target?.trackingNumber || '…4821',
+    type: 'out_for_delivery',
+    title: `Out for delivery: ${target?.item || 'Wireless headphones'}`,
+    message: 'Delhivery courier is out for delivery. Estimated arrival: Today, 2:30–3:15 PM.',
+    read: false,
+  });
+  return res.json({ alert: testAlert });
+});
+
 // --- Email Integration ---
 app.get('/api/integrations/email', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
@@ -429,29 +447,105 @@ app.get('/api/tickets', authMiddleware, (req: Request, res: Response) => {
 
 app.post('/api/tickets', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
-  const { shipmentId, shipmentLabel, category, subject, description } = req.body;
+  const {
+    contactName,
+    contactEmail,
+    contactPhone,
+    contactWhatsapp,
+    preferredContactMethod = 'email',
+    shipmentId,
+    shipmentLabel,
+    trackingNumber,
+    courier,
+    isManualTracking,
+    category = 'other',
+    categoryLabel,
+    subject,
+    description,
+    attachmentName,
+    attachmentDataUrl,
+    attachmentSize,
+    attachmentType,
+  } = req.body;
 
-  if (!subject || !description) {
-    return res.status(400).json({ error: 'Subject and description are required.' });
+  if (!description || !description.trim()) {
+    return res.status(400).json({ error: 'Please explain what happened in the description.' });
   }
 
-  const validCategories = ['delayed', 'incorrect_status', 'missed_delivery', 'delivered_not_received', 'website_issue', 'general_feedback'] as const;
-  const finalCategory = validCategories.includes(category) ? category : 'general_feedback';
+  // Validate contact name
+  const finalContactName = (contactName || user.name || '').trim();
+  if (!finalContactName) {
+    return res.status(400).json({ error: 'Name is required so our support team knows how to address you.' });
+  }
+
+  // Validate preferred contact value
+  if (preferredContactMethod === 'email') {
+    const emailToUse = (contactEmail || user.email || '').trim();
+    if (!emailToUse || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailToUse)) {
+      return res.status(400).json({ error: 'A valid email address is required when Email is your preferred contact method.' });
+    }
+  } else if (preferredContactMethod === 'phone') {
+    const phoneToUse = (contactPhone || '').trim();
+    const digitsOnly = phoneToUse.replace(/\D/g, '');
+    if (!phoneToUse || digitsOnly.length < 7) {
+      return res.status(400).json({ error: 'A valid phone number with country code is required when Phone is your preferred contact method.' });
+    }
+  } else if (preferredContactMethod === 'whatsapp') {
+    const whatsappToUse = (contactWhatsapp || contactPhone || '').trim();
+    const digitsOnly = whatsappToUse.replace(/\D/g, '');
+    if (!whatsappToUse || digitsOnly.length < 7) {
+      return res.status(400).json({ error: 'A valid WhatsApp number with country code is required when WhatsApp is preferred.' });
+    }
+  }
+
+  // Validate shipment requirement for shipment-related categories
+  const shipmentRequired = isShipmentRequiredForCategory(category);
+  if (shipmentRequired && !shipmentId && !trackingNumber) {
+    return res.status(400).json({
+      error: 'Please select an affected shipment or enter a manual tracking ID for this issue category.',
+    });
+  }
+
+  // Validate attachment if provided
+  if (attachmentSize && attachmentSize > 5 * 1024 * 1024) {
+    return res.status(400).json({ error: 'Screenshot file size exceeds the 5 MB limit.' });
+  }
+  if (attachmentType && !['image/png', 'image/jpeg', 'image/jpg', 'image/webp'].includes(attachmentType.toLowerCase())) {
+    return res.status(400).json({ error: 'Only PNG, JPEG, and WebP screenshot files are accepted.' });
+  }
+
+  const resolvedCategoryLabel = categoryLabel || getCategoryLabel(category);
+  const finalSubject = subject && subject.trim()
+    ? subject.trim()
+    : `${resolvedCategoryLabel}${shipmentLabel ? ` — ${shipmentLabel}` : (trackingNumber ? ` (AWB ${trackingNumber})` : '')}`;
 
   const ticket = db.createTicket({
     userId: user.id,
     userEmail: user.email,
     userName: user.name,
-    shipmentId,
-    shipmentLabel,
-    category: finalCategory,
-    subject: subject.trim(),
+    contactName: finalContactName,
+    contactEmail: (contactEmail || user.email || '').trim(),
+    contactPhone: (contactPhone || '').trim(),
+    contactWhatsapp: (contactWhatsapp || '').trim(),
+    preferredContactMethod,
+    shipmentId: shipmentId || undefined,
+    shipmentLabel: shipmentLabel || undefined,
+    trackingNumber: trackingNumber || undefined,
+    courier: courier || undefined,
+    isManualTracking: !!isManualTracking,
+    category,
+    categoryLabel: resolvedCategoryLabel,
+    subject: finalSubject,
     description: description.trim(),
+    attachmentName,
+    attachmentDataUrl,
+    attachmentSize,
+    attachmentType,
   });
 
   return res.status(201).json({
     ticket,
-    notice: 'Ticket logged in ParcelPath support desk. Note: This ticket is for website/tracking assistance and has not been directly submitted to the carrier or retailer.',
+    notice: 'Support request logged in ParcelPath Support Desk under your account. Note: Submitting this request does not trigger phone calls, SMS, or WhatsApp messages, and has not been directly submitted to the carrier or retailer.',
   });
 });
 
@@ -484,12 +578,19 @@ app.put('/api/staff/tickets/:id', authMiddleware, (req: Request, res: Response) 
 app.get('/api/config/support', (req: Request, res: Response) => {
   const supportEmail = process.env.SUPPORT_EMAIL || null;
   const supportPhone = process.env.SUPPORT_PHONE || null;
+  const supportWhatsapp = process.env.SUPPORT_WHATSAPP || null;
+  const hours = process.env.SUPPORT_HOURS || 'Mon–Sat: 9:00 AM – 7:00 PM IST';
+  const configured = !!(supportEmail || supportPhone || supportWhatsapp);
 
   return res.json({
-    configured: !!(supportEmail || supportPhone),
-    supportEmail: supportEmail || 'Add your support email in environment or settings',
-    supportPhone: supportPhone || 'Add your support number in environment or settings',
-    hours: 'Mon-Sat: 9:00 AM – 7:00 PM IST',
+    configured,
+    supportEmail,
+    supportPhone,
+    supportWhatsapp,
+    hours,
+    message: configured
+      ? undefined
+      : 'Official support telephone and WhatsApp lines are currently not configured for direct inbound dialing. Please submit a support request using the form below.',
   });
 });
 
@@ -517,7 +618,12 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+// In standard Node/Cloud Run/container run server. On Vercel, serverless function invokes app directly.
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}
+
+export default app;

@@ -56,13 +56,26 @@ export interface SupportTicket {
   userId: string;
   userEmail: string;
   userName: string;
+  contactName?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  contactWhatsapp?: string;
+  preferredContactMethod?: 'email' | 'phone' | 'whatsapp';
   shipmentId?: string;
   shipmentLabel?: string;
-  category: 'delayed' | 'incorrect_status' | 'missed_delivery' | 'delivered_not_received' | 'website_issue' | 'general_feedback';
+  trackingNumber?: string;
+  courier?: string;
+  isManualTracking?: boolean;
+  category: string;
+  categoryLabel?: string;
   subject: string;
   description: string;
   status: 'Open' | 'In review' | 'Resolved';
   staffReply?: string;
+  attachmentName?: string;
+  attachmentDataUrl?: string;
+  attachmentSize?: number;
+  attachmentType?: string;
   createdAt: string;
 }
 
@@ -95,7 +108,9 @@ export interface DatabaseSchema {
   emailIntegrations: Record<string, EmailIntegrationState>; // userId -> state
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const DATA_DIR = process.env.VERCEL
+  ? path.join('/tmp', 'parcelpath-data')
+  : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 function hashPassword(password: string): string {
@@ -297,6 +312,15 @@ class Database {
         if (!parsed.alerts) parsed.alerts = [];
         return parsed;
       }
+      // On Vercel, if /tmp doesn't have the db yet, check if project seed exists
+      const seedFile = path.resolve(process.cwd(), 'data', 'db.json');
+      if (process.env.VERCEL && fs.existsSync(seedFile)) {
+        const raw = fs.readFileSync(seedFile, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (!parsed.alerts) parsed.alerts = [];
+        this.save(parsed);
+        return parsed;
+      }
     } catch (e) {
       console.warn('Could not read existing database, initializing fresh:', e);
     }
@@ -313,7 +337,7 @@ class Database {
       }
       fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave || this.data, null, 2), 'utf-8');
     } catch (e) {
-      console.error('Error saving database to file:', e);
+      console.warn('Warning: Could not persist database to filesystem (running in-memory):', e);
     }
   }
 
@@ -543,11 +567,24 @@ class Database {
     userId: string;
     userEmail: string;
     userName: string;
+    contactName?: string;
+    contactEmail?: string;
+    contactPhone?: string;
+    contactWhatsapp?: string;
+    preferredContactMethod?: 'email' | 'phone' | 'whatsapp';
     shipmentId?: string;
     shipmentLabel?: string;
-    category: SupportTicket['category'];
+    trackingNumber?: string;
+    courier?: string;
+    isManualTracking?: boolean;
+    category: string;
+    categoryLabel?: string;
     subject: string;
     description: string;
+    attachmentName?: string;
+    attachmentDataUrl?: string;
+    attachmentSize?: number;
+    attachmentType?: string;
   }): SupportTicket {
     const id = 'tkt_' + crypto.randomBytes(6).toString('hex');
     const refNum = 'TKT-' + Math.floor(1000 + Math.random() * 9000) + '-' + new Date().getFullYear();
@@ -558,12 +595,25 @@ class Database {
       userId: params.userId,
       userEmail: params.userEmail,
       userName: params.userName,
+      contactName: params.contactName,
+      contactEmail: params.contactEmail,
+      contactPhone: params.contactPhone,
+      contactWhatsapp: params.contactWhatsapp,
+      preferredContactMethod: params.preferredContactMethod,
       shipmentId: params.shipmentId,
       shipmentLabel: params.shipmentLabel,
+      trackingNumber: params.trackingNumber,
+      courier: params.courier,
+      isManualTracking: params.isManualTracking,
       category: params.category,
+      categoryLabel: params.categoryLabel,
       subject: params.subject,
       description: params.description,
       status: 'Open',
+      attachmentName: params.attachmentName,
+      attachmentDataUrl: params.attachmentDataUrl,
+      attachmentSize: params.attachmentSize,
+      attachmentType: params.attachmentType,
       createdAt: new Date().toISOString(),
     };
 

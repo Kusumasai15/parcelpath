@@ -15,9 +15,13 @@ import {
 import { AddDeliveryModal } from './components/AddDeliveryModal';
 import { OrderDetailsModal } from './components/OrderDetailsModal';
 import { ReportIssueModal } from './components/ReportIssueModal';
+import { CustomerCareForm } from './components/CustomerCareForm';
+import { FeedbackModal } from './components/FeedbackModal';
 import { EmailConnectModal } from './components/EmailConnectModal';
 import { AuthModal } from './components/AuthModal';
+import { NotificationGuideModal } from './components/NotificationGuideModal';
 import { usePWAInstall } from './hooks/usePWAInstall';
+import { getCategoryLabel } from './utils/support';
 
 const getLocalDateStr = (d = new Date()) => {
   const year = d.getFullYear();
@@ -85,6 +89,8 @@ export default function App() {
   const [preselectedIssueShipment, setPreselectedIssueShipment] = useState<Shipment | null>(null);
   const [isEmailConnectOpen, setIsEmailConnectOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+  const [isNotifHelpOpen, setIsNotifHelpOpen] = useState(false);
 
   // Tickets state
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
@@ -97,9 +103,11 @@ export default function App() {
   // Customer care config
   const [supportConfig, setSupportConfig] = useState({
     configured: false,
-    supportEmail: 'Add your support email in environment or settings',
-    supportPhone: 'Add your support number in environment or settings',
+    supportEmail: null as string | null,
+    supportPhone: null as string | null,
+    supportWhatsapp: null as string | null,
     hours: 'Mon-Sat: 9:00 AM – 7:00 PM IST',
+    message: undefined as string | undefined,
   });
 
   // Settings form fields
@@ -139,13 +147,15 @@ export default function App() {
         if (isDetailsOpen) setIsDetailsOpen(false);
         if (isAddOpen) setIsAddOpen(false);
         if (isReportOpen) setIsReportOpen(false);
+        if (isFeedbackOpen) setIsFeedbackOpen(false);
         if (isEmailConnectOpen) setIsEmailConnectOpen(false);
         if (isAuthOpen) setIsAuthOpen(false);
+        if (isNotifHelpOpen) setIsNotifHelpOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [menuOpen, isDetailsOpen, isAddOpen, isReportOpen, isEmailConnectOpen, isAuthOpen, showNotifications]);
+  }, [menuOpen, isDetailsOpen, isAddOpen, isReportOpen, isFeedbackOpen, isEmailConnectOpen, isAuthOpen, isNotifHelpOpen, showNotifications]);
 
   // Fetch current user profile
   const fetchUserProfile = useCallback(async () => {
@@ -446,19 +456,74 @@ export default function App() {
     }
   };
 
-  // Request browser notification permission
+  // Check if running in embedded iframe
+  const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+
+  // Request browser notification permission or open guide if blocked/iframe
   const handleRequestBrowserNotifications = async () => {
-    if (!('Notification' in window)) {
-      alert('This browser does not support desktop notifications. In-app alerts remain active.');
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      alert('This browser does not support desktop notifications. In-app alerts remain 100% active.');
       return;
     }
-    const perm = await Notification.requestPermission();
-    setBrowserNotificationStatus(perm);
-    if (perm === 'granted') {
-      new Notification('ParcelPath Alerts Active', {
-        body: 'You will receive delivery updates when courier scans occur.',
-        icon: '/icon.svg',
+
+    // Modern browsers strictly disallow Notification.requestPermission() from embedded iframes,
+    // and if permission is already 'denied', browsers do not prompt and silently return 'denied'.
+    // In both cases, open the clear interactive Unblock & Permission Guide.
+    if (Notification.permission === 'denied' || isInIframe) {
+      setIsNotifHelpOpen(true);
+      return;
+    }
+
+    try {
+      const perm = await Notification.requestPermission();
+      setBrowserNotificationStatus(perm);
+      if (perm === 'granted') {
+        try {
+          new Notification('ParcelPath Alerts Active', {
+            body: 'You will receive delivery updates when courier scans occur.',
+            icon: '/icon.svg',
+          });
+        } catch {
+          // Ignore if Notification constructor is restricted
+        }
+        setSettingsNotice('Browser desktop notifications enabled successfully!');
+        setTimeout(() => setSettingsNotice(null), 3500);
+      } else if (perm === 'denied') {
+        setIsNotifHelpOpen(true);
+      }
+    } catch (err) {
+      console.warn('Could not request notification permission:', err);
+      setIsNotifHelpOpen(true);
+    }
+  };
+
+  // Trigger test delivery notification
+  const handleSendTestAlert = async () => {
+    try {
+      const res = await fetch('/api/notifications/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : { 'x-allow-demo': 'true' }),
+        },
       });
+      if (res.ok) {
+        const data = await res.json();
+        setAlerts((prev) => [data.alert, ...prev.filter((a) => a.id !== data.alert.id)]);
+        setSettingsNotice('Test delivery alert received! Check your 🔔 alerts.');
+        setTimeout(() => setSettingsNotice(null), 3500);
+
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+          try {
+            new Notification(data.alert.title, {
+              body: data.alert.message,
+              icon: '/icon.svg',
+            });
+          } catch {}
+        }
+      }
+    } catch (e) {
+      console.error('Failed to trigger test alert:', e);
     }
   };
 
@@ -704,38 +769,81 @@ export default function App() {
                 paddingTop: '10px',
                 borderTop: '1px solid var(--line)',
                 display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
+                flexDirection: 'column',
+                gap: '8px',
                 fontSize: '10px',
               }}
             >
-              <span style={{ color: 'var(--muted)' }}>
-                Browser alerts:{' '}
-                <strong>
-                  {browserNotificationStatus === 'granted'
-                    ? 'Enabled'
-                    : browserNotificationStatus === 'denied'
-                    ? 'Blocked'
-                    : 'Not enabled'}
-                </strong>
-              </span>
-              {browserNotificationStatus !== 'granted' && (
+              {/* In-App Alerts Status & Quick Test */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ color: 'var(--muted)' }}>
+                  In-app alerts: <strong style={{ color: '#48bb78' }}>✓ Active</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={handleSendTestAlert}
+                  style={{
+                    padding: '3px 7px',
+                    borderRadius: '5px',
+                    background: 'var(--surface-raised)',
+                    border: '1px solid var(--line)',
+                    color: 'var(--ink)',
+                    fontSize: '9px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                  title="Generate a sample delivery alert to test in-app notifications"
+                >
+                  ⚡ Test alert
+                </button>
+              </div>
+
+              {/* Browser Desktop Push Status & Unblock/Enable Action */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ color: 'var(--muted)' }}>
+                  Browser push:{' '}
+                  <strong
+                    style={{
+                      color:
+                        browserNotificationStatus === 'granted'
+                          ? '#48bb78'
+                          : browserNotificationStatus === 'denied'
+                          ? '#f56565'
+                          : 'var(--muted)',
+                    }}
+                  >
+                    {browserNotificationStatus === 'granted'
+                      ? 'Enabled'
+                      : browserNotificationStatus === 'denied'
+                      ? 'Blocked'
+                      : 'Not enabled'}
+                  </strong>
+                </span>
                 <button
                   type="button"
                   onClick={handleRequestBrowserNotifications}
                   style={{
                     padding: '4px 8px',
                     borderRadius: '6px',
-                    background: 'var(--coral)',
-                    color: 'var(--coral-ink)',
-                    border: 'none',
+                    background: browserNotificationStatus === 'denied' ? 'var(--surface-raised)' : 'var(--coral)',
+                    color: browserNotificationStatus === 'denied' ? 'var(--ink)' : 'var(--coral-ink)',
+                    border: browserNotificationStatus === 'denied' ? '1px solid var(--line)' : 'none',
                     fontWeight: 600,
                     cursor: 'pointer',
                   }}
+                  title={
+                    browserNotificationStatus === 'denied'
+                      ? 'Browser notifications are blocked. Click to see how to unblock.'
+                      : 'Enable browser notifications'
+                  }
                 >
-                  Enable
+                  {browserNotificationStatus === 'denied'
+                    ? 'How to unblock ⓘ'
+                    : browserNotificationStatus === 'granted'
+                    ? 'Guide'
+                    : 'Enable'}
                 </button>
-              )}
+              </div>
             </div>
           </aside>
         )}
@@ -1648,7 +1756,7 @@ export default function App() {
                   <p className="support-kicker">We can help</p>
                   <h2>What would you like to do?</h2>
                   <p className="support-copy">
-                    Report a missed delivery, delay, damaged parcel, or another delivery problem.
+                    Report a missed delivery, delay, damaged parcel, or submit a support inquiry.
                   </p>
                 </div>
                 <div className="support-actions">
@@ -1664,10 +1772,7 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setPreselectedIssueShipment(null);
-                      setIsReportOpen(true);
-                    }}
+                    onClick={() => setIsFeedbackOpen(true)}
                   >
                     Give feedback
                   </button>
@@ -1695,31 +1800,54 @@ export default function App() {
                   No open issues or feedback submitted yet.
                 </div>
               ) : (
-                <div style={{ display: 'grid', gap: '10px' }}>
+                <div style={{ display: 'grid', gap: '12px' }}>
                   {tickets.map((t) => (
                     <article
                       key={t.id}
                       style={{
-                        padding: '14px 16px',
+                        padding: '16px 18px',
                         borderRadius: '12px',
                         border: '1px solid var(--line)',
                         backgroundColor: 'color-mix(in srgb, var(--surface) 92%, var(--mauve))',
                       }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
                         <div>
-                          <span
-                            style={{
-                              fontSize: '10px',
-                              letterSpacing: '.08em',
-                              textTransform: 'uppercase',
-                              color: 'var(--accent-text)',
-                              fontWeight: 600,
-                            }}
-                          >
-                            {t.ticketRef} · {t.category.replace('_', ' ')}
-                          </span>
-                          <h3 style={{ margin: '4px 0 0', fontSize: '13px', fontWeight: 500 }}>{t.subject}</h3>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <span
+                              style={{
+                                fontSize: '10px',
+                                letterSpacing: '.08em',
+                                textTransform: 'uppercase',
+                                color: 'var(--accent-text)',
+                                fontWeight: 600,
+                              }}
+                            >
+                              {t.ticketRef} · {t.categoryLabel || getCategoryLabel(t.category)}
+                            </span>
+                            {t.preferredContactMethod && (
+                              <span
+                                style={{
+                                  fontSize: '9px',
+                                  padding: '1px 6px',
+                                  borderRadius: '4px',
+                                  backgroundColor: 'color-mix(in srgb, var(--accent-text) 16%, var(--surface))',
+                                  color: 'var(--accent-text)',
+                                  textTransform: 'capitalize',
+                                }}
+                              >
+                                Via {t.preferredContactMethod}
+                              </span>
+                            )}
+                          </div>
+                          <h3 style={{ margin: '5px 0 0', fontSize: '13px', fontWeight: 500 }}>{t.subject}</h3>
+                          {t.contactName && (
+                            <span style={{ display: 'block', margin: '3px 0 0', fontSize: '10px', color: 'var(--muted)' }}>
+                              Contact: <strong>{t.contactName}</strong>
+                              {t.contactPhone ? ` · ${t.contactPhone}` : ''}
+                              {t.contactEmail && !t.contactPhone ? ` · ${t.contactEmail}` : ''}
+                            </span>
+                          )}
                         </div>
                         <span
                           style={{
@@ -1737,26 +1865,57 @@ export default function App() {
                           {t.status}
                         </span>
                       </div>
-                      <p style={{ margin: '8px 0 0', fontSize: '11px', color: 'var(--muted)', lineHeight: '1.45' }}>
+
+                      <p style={{ margin: '10px 0 0', fontSize: '11px', color: 'var(--ink)', lineHeight: '1.5', whiteSpace: 'pre-wrap' }}>
                         {t.description}
                       </p>
+
                       {t.shipmentLabel && (
-                        <p style={{ margin: '6px 0 0', fontSize: '10px', color: 'var(--muted)' }}>
+                        <p style={{ margin: '8px 0 0', fontSize: '10px', color: 'var(--muted)' }}>
                           Related parcel: <strong>{t.shipmentLabel}</strong>
                         </p>
                       )}
-                      {t.staffReply && (
+
+                      {t.attachmentName && (
                         <div
                           style={{
                             marginTop: '10px',
-                            padding: '8px 10px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            padding: '6px 10px',
+                            borderRadius: '6px',
+                            backgroundColor: 'var(--page)',
+                            border: '1px solid var(--line)',
+                            fontSize: '10px',
+                          }}
+                        >
+                          {t.attachmentDataUrl ? (
+                            <img
+                              src={t.attachmentDataUrl}
+                              alt="Attachment thumbnail"
+                              style={{ width: '22px', height: '22px', borderRadius: '4px', objectFit: 'cover' }}
+                            />
+                          ) : (
+                            <span>📎</span>
+                          )}
+                          <span>Attachment: <strong>{t.attachmentName}</strong></span>
+                        </div>
+                      )}
+
+                      {t.staffReply && (
+                        <div
+                          style={{
+                            marginTop: '12px',
+                            padding: '10px 12px',
                             borderRadius: '8px',
                             backgroundColor: 'var(--surface-raised)',
-                            borderLeft: '2px solid #48bb78',
+                            borderLeft: '3px solid #48bb78',
                             fontSize: '11px',
                           }}
                         >
-                          <strong>Support reply:</strong> {t.staffReply}
+                          <strong style={{ color: '#48bb78', display: 'block', marginBottom: '2px' }}>Support Team Reply:</strong>
+                          <span style={{ color: 'var(--ink)' }}>{t.staffReply}</span>
                         </div>
                       )}
                     </article>
@@ -1773,74 +1932,20 @@ export default function App() {
                 <h1>Customer Care</h1>
                 <p>Help with parcel delays, missed delivery attempts, tracking problems, or damaged items.</p>
               </div>
-              <div className="care-grid">
-                <article className="care-card">
-                  <h2>Contact details</h2>
-                  <p>Official support channels for the ParcelPath tracking platform.</p>
-                  <div className="care-detail">
-                    <span>Email</span>
-                    <strong>{supportConfig.supportEmail}</strong>
-                  </div>
-                  <div className="care-detail">
-                    <span>Phone / WhatsApp</span>
-                    <strong>{supportConfig.supportPhone}</strong>
-                  </div>
-                  <div className="care-detail">
-                    <span>Hours</span>
-                    <strong>{supportConfig.hours}</strong>
-                  </div>
-                  <div className="simple-actions">
-                    <button
-                      className="primary"
-                      type="button"
-                      onClick={() => {
-                        setPreselectedIssueShipment(null);
-                        setIsReportOpen(true);
-                      }}
-                    >
-                      Contact support
-                    </button>
-                  </div>
-                </article>
 
-                <article className="care-card">
-                  <h2>Before you contact us</h2>
-                  <p>Including these details can help Customer Care understand the issue.</p>
-                  <div className="care-detail">
-                    <span>Tracking ID</span>
-                    <strong>For the affected parcel (Courier AWB)</strong>
-                  </div>
-                  <div className="care-detail">
-                    <span>Issue</span>
-                    <strong>Delay, missed attempt, damage, or other</strong>
-                  </div>
-                  <div className="care-detail">
-                    <span>Details</span>
-                    <strong>What happened and when</strong>
-                  </div>
-                  <div className="simple-actions">
-                    <button
-                      className="primary"
-                      type="button"
-                      onClick={() => {
-                        setPreselectedIssueShipment(null);
-                        setIsReportOpen(true);
-                      }}
-                    >
-                      Report a delivery issue
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPreselectedIssueShipment(null);
-                        setIsReportOpen(true);
-                      }}
-                    >
-                      Send feedback
-                    </button>
-                  </div>
-                </article>
-              </div>
+              <CustomerCareForm
+                currentUser={currentUser}
+                shipments={shipments}
+                sessionToken={sessionToken}
+                supportConfig={supportConfig}
+                onSuccessTicket={(ticket) => {
+                  setTickets((prev) => [ticket, ...prev.filter((t) => t.id !== ticket.id)]);
+                  setSettingsNotice(`Support ticket ${ticket.ticketRef} submitted successfully.`);
+                  setTimeout(() => setSettingsNotice(null), 4000);
+                }}
+                onOpenFeedback={() => setIsFeedbackOpen(true)}
+                onNavigateToIssues={() => navigateTo('issues')}
+              />
             </section>
           )}
 
@@ -1901,15 +2006,33 @@ export default function App() {
                     Arrival reminders
                   </label>
 
-                  <div style={{ marginTop: '12px' }}>
+                  <div style={{ marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                     <button
                       className="details"
                       type="button"
                       onClick={handleRequestBrowserNotifications}
                     >
                       {browserNotificationStatus === 'granted'
-                        ? '✓ Browser Notifications Active'
+                        ? '✓ Browser Push Active'
+                        : browserNotificationStatus === 'denied'
+                        ? '⚠️ Browser Alerts Blocked – How to Unblock'
                         : 'Enable Browser Web Push'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSendTestAlert}
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--line)',
+                        background: 'var(--surface)',
+                        color: 'var(--ink)',
+                        fontSize: '11px',
+                        fontWeight: 500,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      ⚡ Send Test Alert
                     </button>
                   </div>
 
@@ -2044,6 +2167,18 @@ export default function App() {
         sessionToken={sessionToken}
       />
 
+      <FeedbackModal
+        isOpen={isFeedbackOpen}
+        onClose={() => setIsFeedbackOpen(false)}
+        currentUser={currentUser}
+        sessionToken={sessionToken}
+        onSuccess={(ticket) => {
+          setTickets((prev) => [ticket, ...prev]);
+          setSettingsNotice(`Thank you! Feedback recorded (Ref: ${ticket.ticketRef}).`);
+          setTimeout(() => setSettingsNotice(null), 4000);
+        }}
+      />
+
       <EmailConnectModal
         isOpen={isEmailConnectOpen}
         onClose={() => setIsEmailConnectOpen(false)}
@@ -2056,6 +2191,14 @@ export default function App() {
         currentUser={currentUser}
         onLoginSuccess={handleLoginSuccess}
         onLogout={handleLogout}
+      />
+
+      <NotificationGuideModal
+        isOpen={isNotifHelpOpen}
+        onClose={() => setIsNotifHelpOpen(false)}
+        browserStatus={browserNotificationStatus}
+        onSendTestAlert={handleSendTestAlert}
+        onRequestPermission={handleRequestBrowserNotifications}
       />
     </div>
   );
