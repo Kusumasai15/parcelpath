@@ -47,6 +47,8 @@ ParcelPath is a delivery-management web application designed around a familiar p
 
 - **Reliable sign-out:** Clears account-specific data and the saved browser token, revokes the active session on the server, and prevents pending profile or delivery requests from restoring signed-out state.
 - **No automatic demo login:** Unauthenticated requests and the old demo token are rejected. The demo-account button has been removed.
+- **Change password:** Account settings now checks the current password, validates and confirms a new 12–128-character password, and revokes all sessions after success. New and changed passwords use salted scrypt hashes; legacy password hashes remain readable for existing accounts.
+- **Forgot password entry point:** Available below sign-in. Email recovery is deliberately unavailable until a verified email provider and durable, single-use reset-token storage are implemented. The endpoint returns an honest unavailable response and never sends or exposes a reset token.
 - **Password visibility:** An eye control lets users show or hide the password while entering it.
 - **Vercel API fix:** Corrected the server module import in the API entry point so authentication requests can reach Express.
 - **Stable production link:** Use [parcelpath-brown.vercel.app](https://parcelpath-brown.vercel.app/) for the latest production release; older deployment-specific links may still show earlier versions.
@@ -97,7 +99,7 @@ ParcelPath is hosted on Vercel at the live-demo link above. The repository conta
 
 ### Before using real customer data
 
-1. **Harden prototype authentication.** Automatic demo access has been removed and sign-out now revokes the active session. Replace the current fixed-salt SHA-256 password hashing with a suitable authentication service or password-hashing implementation, add session expiry, and ensure profile responses never return password hashes.
+1. **Harden prototype authentication.** Automatic demo access has been removed and sign-out now revokes the active session. New and changed passwords now use salted scrypt; migrate remaining legacy SHA-256 hashes, replace the per-instance password-attempt limiter with shared rate limiting, add session expiry, and ensure profile responses never return password hashes.
 2. **Implement durable storage.** `src/server/db.ts` writes to `data/db.json` locally and `/tmp/parcelpath-data` when `VERCEL` is set. This is not a shared, durable database. Adding `DATABASE_URL` alone does not change it.
 3. **Implement private attachment storage.** Screenshots currently live as base64 data in ticket records. A Blob token alone does not upload them to Blob storage. Validate actual file bytes and enforce attachment access controls.
 4. **Finish data integrations.** Implement courier requests and truthful refresh results. Complete Gmail authorization and scanning before reporting email as connected.
