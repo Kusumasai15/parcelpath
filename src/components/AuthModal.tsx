@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
+import { ForgotPasswordForm } from './PasswordSettings';
 import { UserProfile } from '../types';
 
 interface AuthModalProps {
@@ -17,6 +18,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onLoginSuccess,
   onLogout,
 }) => {
+  const [isForgot, setIsForgot] = useState(false);
   const [isRegister, setIsRegister] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -27,6 +29,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   useEffect(() => {
     setShowPassword(false);
+    setPassword('');
+    setError(null);
+    setIsForgot(false);
   }, [isOpen, isRegister, currentUser]);
 
   if (!isOpen) return null;
@@ -70,7 +75,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <div>
               <p className="dialog-kicker">Account Access</p>
               <h2 id="auth-modal-title">
-                {currentUser ? 'Your Account' : isRegister ? 'Create ParcelPath Account' : 'Sign in to ParcelPath'}
+                {currentUser ? 'Your Account' : isForgot ? 'Forgot password?' : isRegister ? 'Create ParcelPath Account' : 'Sign in to ParcelPath'}
               </h2>
               <p className="dialog-sub">
                 {currentUser
@@ -121,6 +126,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </button>
               </div>
             </div>
+          ) : isForgot ? (
+            <ForgotPasswordForm onBack={() => setIsForgot(false)} />
           ) : (
             <form onSubmit={handleSubmit} style={{ marginTop: '16px' }}>
               {error && (
@@ -238,6 +245,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
               </div>
 
+              {!isRegister && <button type="button" onClick={() => { setPassword(''); setError(null); setIsForgot(true); }}
+                style={{ marginBottom: 14, color: 'var(--ink)', background: 'transparent', border: 'none', textDecoration: 'underline' }}>
+                Forgot password?
+              </button>}
               <div className="dialog-actions">
                 <button
                   type="button"
