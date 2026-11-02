@@ -61,26 +61,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  const switchToDemo = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'saddikutikusumasai@gmail.com', password: 'welcome123' }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        onLoginSuccess(data.user, data.token);
-        onClose();
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <>
       <div className="modal-backdrop" onClick={onClose} aria-hidden="true" />
@@ -265,9 +245,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   style={{ marginRight: 'auto' }}
                 >
                   {isRegister ? 'Already have an account? Sign in' : 'Create new account'}
-                </button>
-                <button type="button" onClick={switchToDemo} disabled={loading}>
-                  Demo Account (Kusuma)
                 </button>
                 <button className="report-from-details" type="submit" disabled={loading}>
                   {loading ? 'Please wait...' : isRegister ? 'Register' : 'Sign in'}
