@@ -1,3 +1,4 @@
+import { PasswordSettings } from './components/PasswordSettings';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -2023,6 +2024,11 @@ export default function App() {
                     </div>
                   </form>
                 </article>
+
+                {sessionToken && currentUser && <PasswordSettings token={sessionToken} onChanged={() => {
+                  void handleLogout();
+                  setSettingsNotice('Password changed. Sign in again with your new password.');
+                }} />}
 
                 <article className="settings-card">
                   <h2>Appearance</h2>
