@@ -106,6 +106,51 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   });
 });
 
+// Password recovery must not bypass email ownership verification.
+// Enable a real recovery provider with durable token storage before sending reset links.
+app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const { email } = req.body;
+  if (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    return res.status(400).json({ error: 'Enter a valid email address.' });
+  }
+  return res.status(503).json({
+    error: 'Password reset emails are not available yet. No reset email has been sent. If you are still signed in and know your current password, you can change it in Account settings.',
+  });
+});
+
+const passwordAttempts = new Map<string, { count: number; until: number }>();
+app.post('/api/auth/change-password', authMiddleware, (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const user = req.user!;
+  const { currentPassword, newPassword } = req.body;
+  if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 128) {
+    return res.status(400).json({ error: 'Enter your current password.' });
+  }
+  if (typeof newPassword !== 'string' || newPassword.length < 12 || newPassword.length > 128) {
+    return res.status(400).json({ error: 'Use 12–128 characters for your new password.' });
+  }
+  const now = Date.now();
+  for (const [id, entry] of passwordAttempts) {
+    if (entry.until <= now) passwordAttempts.delete(id);
+  }
+  const attempts = passwordAttempts.get(user.id) || { count: 0, until: now + 15 * 60 * 1000 };
+  if (attempts.count >= 5) {
+    return res.status(429).json({ error: 'Too many incorrect attempts. Try again in 15 minutes.' });
+  }
+  if (!db.verifyPassword(user, currentPassword)) {
+    attempts.count++;
+    passwordAttempts.set(user.id, attempts);
+    return res.status(400).json({ error: 'Your current password is incorrect.' });
+  }
+  if (currentPassword === newPassword) {
+    return res.status(400).json({ error: 'Choose a password different from your current password.' });
+  }
+  db.changePassword(user.id, newPassword);
+  passwordAttempts.delete(user.id);
+  return res.json({ success: true, message: 'Password changed. Sign in again with your new password.' });
+});
+
 app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
   return res.json({
