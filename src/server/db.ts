@@ -114,7 +114,8 @@ const DATA_DIR = process.env.VERCEL
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 function hashPassword(password: string): string {
-  return crypto.createHash('sha256').update(password + '_parcelpath_salt').digest('hex');
+  const salt = crypto.randomBytes(16).toString('hex');
+  return `scrypt:${salt}:${crypto.scryptSync(password, salt, 64).toString('hex')}`;
 }
 
 function initDefaultDatabase(): DatabaseSchema {
@@ -392,7 +393,27 @@ class Database {
   }
 
   verifyPassword(user: User, password: string): boolean {
-    return user.passwordHash === hashPassword(password);
+    if (typeof password !== 'string' || password.length > 128) return false;
+    const [scheme, salt, digest] = user.passwordHash.split(':');
+    if (scheme === 'scrypt' && salt && digest) {
+      const expected = Buffer.from(digest, 'hex');
+      const actual = crypto.scryptSync(password, salt, 64);
+      return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+    }
+    // Keep existing accounts usable while upgrading passwords on change.
+    const legacy = crypto.createHash('sha256').update(password + '_parcelpath_salt').digest('hex');
+    return user.passwordHash === legacy;
+  }
+
+  changePassword(userId: string, password: string): void {
+    const user = this.getUserById(userId);
+    if (!user) throw new Error('Account not found.');
+    const passwordHash = hashPassword(password);
+    user.passwordHash = passwordHash;
+    for (const [token, id] of Object.entries(this.data.sessions)) {
+      if (id === userId) delete this.data.sessions[token];
+    }
+    this.save();
   }
 
   updateUserProfile(userId: string, updates: Partial<User>): User | undefined {
