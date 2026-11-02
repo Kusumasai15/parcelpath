@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { UserProfile } from '../types';
 
 interface AuthModalProps {
@@ -20,8 +21,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setShowPassword(false);
+  }, [isOpen, isRegister, currentUser]);
 
   if (!isOpen) return null;
 
@@ -205,16 +211,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <label htmlFor="auth-password" style={{ display: 'block', fontSize: '11px', color: 'var(--muted)', marginBottom: '5px' }}>
                   Password
                 </label>
-                <input
+                <div style={{ position: 'relative' }}>
+                  <input
                   id="auth-password"
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete={isRegister ? 'new-password' : 'current-password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
                   required
                   style={{
                     width: '100%',
-                    padding: '10px 11px',
+                    padding: '10px 48px 10px 11px',
                     borderRadius: '8px',
                     border: '1px solid var(--line)',
                     background: 'var(--page)',
@@ -222,6 +230,32 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     fontSize: '12px',
                   }}
                 />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((visible) => !visible)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-controls="auth-password"
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                    style={{
+                      position: 'absolute',
+                      right: '2px',
+                      top: 0,
+                      bottom: 0,
+                      width: '44px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: 0,
+                      border: 'none',
+                      borderRadius: '6px',
+                      background: 'transparent',
+                      color: 'var(--ink)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+                  </button>
+                </div>
               </div>
 
               <div className="dialog-actions">
