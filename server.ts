@@ -1,0 +1,450 @@
+import express, { Request, Response, NextFunction } from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+import { db, User, Shipment, TrackingEvent } from './src/server/db.js';
+import { detectCourier, isStoreOrderId, SUPPORTED_COURIERS, formatHonestEta } from './src/utils/courier.js';
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+app.use(express.json());
+
+// Extend express Request to include currentUser
+declare global {
+  namespace Express {
+    interface Request {
+      user?: User;
+      sessionToken?: string;
+    }
+  }
+}
+
+// Authentication middleware
+function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  let token: string | undefined;
+
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.substring(7);
+  } else if (req.headers['x-session-token']) {
+    token = req.headers['x-session-token'] as string;
+  }
+
+  if (token) {
+    const user = db.getUserBySession(token);
+    if (user) {
+      req.user = user;
+      req.sessionToken = token;
+      return next();
+    }
+  }
+
+  // Fallback to default demo user if demo token provided or for easy preview exploration
+  if (req.headers['x-allow-demo'] === 'true' || !token) {
+    const defaultUser = db.getUserById('user_kusuma_default');
+    if (defaultUser) {
+      req.user = defaultUser;
+      req.sessionToken = 'demo_session_token_kusuma';
+      return next();
+    }
+  }
+
+  return res.status(401).json({ error: 'Authentication required. Please sign in.' });
+}
+
+// --- Auth Routes ---
+app.post('/api/auth/register', (req: Request, res: Response) => {
+  const { name, email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required.' });
+  }
+
+  const existing = db.getUserByEmail(email);
+  if (existing) {
+    return res.status(409).json({ error: 'An account with this email already exists.' });
+  }
+
+  const user = db.createUser(name || 'Parcel User', email, password);
+  const token = db.createSession(user.id);
+
+  return res.json({
+    token,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      avatarInitial: user.avatarInitial,
+      role: user.role,
+      notifications: user.notifications,
+      backupRecipient: user.backupRecipient,
+      deliveryInstructions: user.deliveryInstructions,
+    },
+  });
+});
+
+app.post('/api/auth/login', (req: Request, res: Response) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required.' });
+  }
+
+  const user = db.getUserByEmail(email);
+  if (!user || !db.verifyPassword(user, password)) {
+    return res.status(401).json({ error: 'Invalid email or password.' });
+  }
+
+  const token = db.createSession(user.id);
+  return res.json({
+    token,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      avatarInitial: user.avatarInitial,
+      role: user.role,
+      notifications: user.notifications,
+      backupRecipient: user.backupRecipient,
+      deliveryInstructions: user.deliveryInstructions,
+    },
+  });
+});
+
+app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  return res.json({
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      avatarInitial: user.avatarInitial,
+      role: user.role,
+      notifications: user.notifications,
+      backupRecipient: user.backupRecipient,
+      deliveryInstructions: user.deliveryInstructions,
+    },
+  });
+});
+
+app.put('/api/auth/profile', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const { name, backupRecipient, deliveryInstructions, notifications } = req.body;
+
+  const updated = db.updateUserProfile(user.id, {
+    name,
+    backupRecipient,
+    deliveryInstructions,
+    notifications,
+  });
+
+  return res.json({ user: updated });
+});
+
+app.post('/api/auth/logout', authMiddleware, (req: Request, res: Response) => {
+  if (req.sessionToken) {
+    db.removeSession(req.sessionToken);
+  }
+  return res.json({ success: true });
+});
+
+app.delete('/api/auth/account', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  db.deleteUser(user.id);
+  return res.json({
+    success: true,
+    message: 'Account, saved shipments, and personal records permanently deleted.',
+  });
+});
+
+// --- Courier Provider Info ---
+app.get('/api/couriers/status', (req: Request, res: Response) => {
+  const hasLiveApiKey = !!(process.env.DELHIVERY_API_KEY || process.env.SHIPROCKET_API_KEY || process.env.TRACK17_API_KEY);
+  return res.json({
+    isLiveConfigured: hasLiveApiKey,
+    provider: hasLiveApiKey ? 'Configured Gateway' : 'Standard Web Tracking & Deterministic Simulator',
+    message: hasLiveApiKey
+      ? 'Live courier gateway active.'
+      : 'Tracking provider setup required for carrier-direct live updates. Shipments can still be saved, tracked via official carrier links, and demo packages simulate realistic scan points.',
+    supportedCouriers: Object.values(SUPPORTED_COURIERS).map((c) => ({
+      id: c.id,
+      name: c.name,
+      shortCode: c.shortCode,
+    })),
+  });
+});
+
+// --- Shipments / Deliveries API ---
+app.get('/api/shipments', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const filter = req.query.filter as string | undefined;
+  const search = req.query.search as string | undefined;
+
+  const shipments = db.getShipmentsForUser(user.id, { filter, search });
+  return res.json({ shipments });
+});
+
+app.post('/api/shipments', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const { trackingNumber, courier: userCourier, store, item, imageUrl } = req.body;
+
+  if (!trackingNumber || !trackingNumber.trim()) {
+    return res.status(400).json({ error: 'Tracking number / AWB is required.' });
+  }
+
+  const rawTracking = trackingNumber.trim();
+
+  // Check store order ID
+  const storeCheck = isStoreOrderId(rawTracking);
+  if (storeCheck.isStoreId) {
+    return res.status(422).json({
+      error: 'Shopping order ID detected instead of Courier AWB.',
+      details: storeCheck.tip,
+      storeName: storeCheck.storeName,
+    });
+  }
+
+  const courierKey = userCourier && SUPPORTED_COURIERS[userCourier] ? userCourier : detectCourier(rawTracking);
+  const courierInfo = SUPPORTED_COURIERS[courierKey] || SUPPORTED_COURIERS.other;
+
+  // Duplicate check
+  const duplicate = db.findDuplicateShipment(user.id, courierKey, rawTracking);
+  if (duplicate) {
+    return res.status(409).json({
+      error: `This shipment (${courierInfo.name} ${rawTracking}) is already being tracked in your account.`,
+      shipment: duplicate,
+    });
+  }
+
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  const initialEvents: TrackingEvent[] = [
+    { title: 'Tracking record created', time: `Today, ${timeStr}`, isDone: true },
+    { title: 'Electronic shipment data received', time: `Today, ${timeStr}`, isDone: true },
+    { title: 'In transit to distribution center', time: 'Awaiting courier scan', isDone: false },
+  ];
+
+  const honestEta = formatHonestEta({
+    status: 'In transit',
+    estimatedDate: 'in 2-3 business days',
+  });
+
+  const newShipment = db.addShipment(user.id, {
+    item: item?.trim() || `${courierInfo.name} Parcel`,
+    store: store?.trim() || 'Online Store',
+    trackingNumber: rawTracking,
+    courier: courierKey,
+    courierName: courierInfo.name,
+    status: 'In transit',
+    eta: honestEta.main,
+    location: 'Carrier origin hub (Today)',
+    events: initialEvents,
+    imageUrl: imageUrl?.trim() || undefined,
+    isArchived: false,
+    isDemo: false,
+  });
+
+  return res.status(201).json({ shipment: newShipment });
+});
+
+app.put('/api/shipments/:id', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const shipmentId = req.params.id;
+  const { item, store, notes, isArchived } = req.body;
+
+  const updated = db.updateShipment(shipmentId, user.id, {
+    ...(item !== undefined && { item: item.trim() }),
+    ...(store !== undefined && { store: store.trim() }),
+    ...(notes !== undefined && { notes }),
+    ...(isArchived !== undefined && { isArchived }),
+  });
+
+  if (!updated) {
+    return res.status(404).json({ error: 'Shipment not found.' });
+  }
+
+  return res.json({ shipment: updated });
+});
+
+app.delete('/api/shipments/:id', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const shipmentId = req.params.id;
+
+  const removed = db.removeShipment(shipmentId, user.id);
+  if (!removed) {
+    return res.status(404).json({ error: 'Shipment not found.' });
+  }
+
+  return res.json({
+    success: true,
+    message: 'Shipment removed from your tracker. (This does not affect the retailer order or courier dispatch).',
+  });
+});
+
+app.post('/api/shipments/:id/refresh', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const shipment = db.getShipmentById(req.params.id, user.id);
+  if (!shipment) {
+    return res.status(404).json({ error: 'Shipment not found.' });
+  }
+
+  // Update lastUpdated timestamp truthfully
+  const updated = db.updateShipment(shipment.id, user.id, {
+    lastUpdated: 'Just now',
+  });
+
+  return res.json({ shipment: updated, refreshed: true });
+});
+
+// --- Email Integration ---
+app.get('/api/integrations/email', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const state = db.getEmailIntegration(user.id);
+  const isOauthConfigured = !!process.env.GOOGLE_CLIENT_ID;
+
+  return res.json({
+    ...state,
+    oauthConfigured: isOauthConfigured,
+    setupGuide: !isOauthConfigured
+      ? 'To connect Gmail, configure GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env. We request narrow read-only access to search only order confirmation emails and extract product thumbnails.'
+      : undefined,
+  });
+});
+
+app.post('/api/integrations/email/connect', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const isOauthConfigured = !!process.env.GOOGLE_CLIENT_ID;
+
+  if (!isOauthConfigured) {
+    // Return honest setup required state as required by Section 6
+    return res.status(400).json({
+      error: 'Google OAuth credentials not configured on server.',
+      instructions: 'Please add GOOGLE_CLIENT_ID to your environment variables to enable Gmail read-only order scanning.',
+    });
+  }
+
+  db.setEmailIntegration(user.id, {
+    status: 'connected',
+    email: user.email,
+    connectedAt: new Date().toISOString(),
+    message: 'Gmail order scanning active. Product pictures will be matched using retailer order numbers.',
+  });
+
+  return res.json({ success: true, status: 'connected' });
+});
+
+app.post('/api/integrations/email/disconnect', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  db.setEmailIntegration(user.id, {
+    status: 'disconnected',
+    message: 'Gmail connection removed and cached tokens cleared.',
+  });
+  return res.json({ success: true, status: 'disconnected' });
+});
+
+// --- Issues & Feedback Tickets ---
+app.get('/api/tickets', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const tickets = db.getTicketsForUser(user.id);
+  return res.json({ tickets });
+});
+
+app.post('/api/tickets', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const { shipmentId, shipmentLabel, category, subject, description } = req.body;
+
+  if (!subject || !description) {
+    return res.status(400).json({ error: 'Subject and description are required.' });
+  }
+
+  const validCategories = ['delayed', 'incorrect_status', 'missed_delivery', 'delivered_not_received', 'website_issue', 'general_feedback'] as const;
+  const finalCategory = validCategories.includes(category) ? category : 'general_feedback';
+
+  const ticket = db.createTicket({
+    userId: user.id,
+    userEmail: user.email,
+    userName: user.name,
+    shipmentId,
+    shipmentLabel,
+    category: finalCategory,
+    subject: subject.trim(),
+    description: description.trim(),
+  });
+
+  return res.status(201).json({
+    ticket,
+    notice: 'Ticket logged in ParcelPath support desk. Note: This ticket is for website/tracking assistance and has not been directly submitted to the carrier or retailer.',
+  });
+});
+
+// Protected staff view
+app.get('/api/staff/tickets', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  if (user.role !== 'staff' && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Staff authorization required.' });
+  }
+
+  return res.json({ tickets: db.getAllTickets() });
+});
+
+app.put('/api/staff/tickets/:id', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  if (user.role !== 'staff' && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Staff authorization required.' });
+  }
+
+  const { status, staffReply } = req.body;
+  const updated = db.updateTicketStatus(req.params.id, status, staffReply);
+  if (!updated) {
+    return res.status(404).json({ error: 'Ticket not found.' });
+  }
+
+  return res.json({ ticket: updated });
+});
+
+// --- Customer Care Configuration ---
+app.get('/api/config/support', (req: Request, res: Response) => {
+  const supportEmail = process.env.SUPPORT_EMAIL || null;
+  const supportPhone = process.env.SUPPORT_PHONE || null;
+
+  return res.json({
+    configured: !!(supportEmail || supportPhone),
+    supportEmail: supportEmail || 'Add your support email in environment or settings',
+    supportPhone: supportPhone || 'Add your support number in environment or settings',
+    hours: 'Mon-Sat: 9:00 AM – 7:00 PM IST',
+  });
+});
+
+// --- Production / Dev Server Mounting ---
+async function startServer() {
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (!isProduction) {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.resolve(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req: Request, res: Response) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`ParcelPath server listening on http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});

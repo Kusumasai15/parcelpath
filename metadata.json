@@ -1,0 +1,6 @@
+{
+  "name": "ParcelPath - Delivery & Parcel Tracking",
+  "description": "Multi-courier parcel tracking dashboard for Amazon, Flipkart, Nykaa, and courier shipments with real-time status, honest ETAs, delivery preferences, and PWA support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

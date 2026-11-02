@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ParcelPath - Delivery &amp; Parcel Tracking</title>
+    <meta name="description" content="Multi-courier parcel tracking dashboard for Amazon, Flipkart, Nykaa, and courier shipments with real-time status, honest ETAs, delivery preferences, and PWA support." />
+    <meta property="og:title" content="ParcelPath - Delivery &amp; Parcel Tracking" />
+    <meta property="og:description" content="Multi-courier parcel tracking dashboard for Amazon, Flipkart, Nykaa, and courier shipments with real-time status, honest ETAs, delivery preferences, and PWA support." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#141416" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ParcelPath" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <script>
+      (function() {
+        try {
+          var savedTheme = localStorage.getItem('parcelpath-theme');
+          var theme = savedTheme === 'light' ? 'light' : 'dark';
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch(e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
