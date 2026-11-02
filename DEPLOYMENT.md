@@ -68,6 +68,7 @@ Under **Settings → Environment Variables** in the Vercel dashboard, add the fo
 | `BLUEDART_LICENSE_KEY` | Optional | Enterprise tracking credentials for Blue Dart. |
 | `BLOB_READ_WRITE_TOKEN` | Optional | Vercel Blob token for external persistent attachment storage. |
 | `DATABASE_URL` | Optional | PostgreSQL connection string for permanent multi-user database storage. |
+| `CRON_SECRET` | Optional | Secret key to protect `/api/cron/refresh-tracking` from unauthorized external requests. |
 
 ---
 
@@ -87,20 +88,31 @@ Under **Settings → Environment Variables** in the Vercel dashboard, add the fo
 
 When configuring external integrations for your Vercel domain:
 
-1. **Google Cloud Console (OAuth Credentials):**
-   - **Authorized JavaScript Origins:**
-     `https://<your-project>.vercel.app`
-   - **Authorized Redirect URIs:**
-     `https://<your-project>.vercel.app/api/auth/google/callback`
+1. **Firebase Console (Authorized Domains for Authentication & Storage):**
+   - Go to [Firebase Console](https://console.firebase.google.com/) → Your Project → **Authentication** → **Settings** → **Authorized domains**.
+   - Click **Add domain** and enter your Vercel deployment domain:
+     - `<your-project>.vercel.app`
+     - Any custom domain (e.g., `parcelpath.in` or `www.parcelpath.in`)
+   - *Why this is needed:* Firebase Auth rejects authentication tokens and popup redirects originating from unrecognized hostnames.
 
-2. **Courier Webhook Endpoints:**
-   - **Delhivery Tracking Webhook:**
-     `https://<your-project>.vercel.app/api/webhooks/delhivery`
-   - **Blue Dart Tracking Webhook:**
-     `https://<your-project>.vercel.app/api/webhooks/bluedart`
+2. **Google Cloud Console (OAuth Credentials):**
+   - Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials).
+   - Under your OAuth 2.0 Client ID:
+     - **Authorized JavaScript Origins:**
+       `https://<your-project>.vercel.app`
+     - **Authorized Redirect URIs:**
+       `https://<your-project>.vercel.app/api/auth/google/callback`
 
-3. **Content Security & CORS:**
-   - The server accepts standard same-origin requests from your Vercel domain and allows image previews from data URIs and verified carrier domains.
+3. **Courier Webhook Endpoints:**
+   - In your carrier/aggregator developer portal (Delhivery, Blue Dart, Shiprocket, or 17TRACK):
+     - **Delhivery Tracking Webhook:**
+       `https://<your-project>.vercel.app/api/webhooks/delhivery`
+     - **Blue Dart Tracking Webhook:**
+       `https://<your-project>.vercel.app/api/webhooks/bluedart`
+
+4. **Background Tracking Scheduler (Vercel Cron):**
+   - Configured in `vercel.json` (`/api/cron/refresh-tracking`, scheduled daily or hourly).
+   - In Vercel Project Settings → **Cron Jobs**, verify that `/api/cron/refresh-tracking` is registered.
 
 ---
 

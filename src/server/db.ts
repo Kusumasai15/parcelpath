@@ -504,6 +504,20 @@ class Database {
     return shipment;
   }
 
+  refreshActiveShipments(): number {
+    const active = this.data.shipments.filter(
+      (s) => !s.isArchived && s.status !== 'Delivered'
+    );
+    const now = new Date().toISOString();
+    for (const s of active) {
+      s.lastRefreshedAt = now;
+    }
+    if (active.length > 0) {
+      this.save();
+    }
+    return active.length;
+  }
+
   removeShipment(id: string, userId: string): boolean {
     const beforeCount = this.data.shipments.length;
     this.data.shipments = this.data.shipments.filter((s) => !(s.id === id && s.userId === userId));

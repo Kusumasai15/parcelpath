@@ -325,6 +325,22 @@ app.post('/api/shipments/:id/refresh', authMiddleware, (req: Request, res: Respo
   return res.json({ shipment: updated, refreshed: true });
 });
 
+// Scheduled background tracking refresh (for Vercel Cron or external scheduler)
+app.get('/api/cron/refresh-tracking', (req: Request, res: Response) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const authHeader = req.headers.authorization;
+  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: 'Unauthorized cron trigger' });
+  }
+
+  const count = db.refreshActiveShipments();
+  return res.json({
+    success: true,
+    refreshedShipments: count,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // "I won't be home" / Rescheduling inquiry
 app.post('/api/shipments/:id/reschedule', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
