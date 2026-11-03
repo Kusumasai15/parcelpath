@@ -99,13 +99,41 @@ export interface EmailIntegrationState {
   message?: string;
 }
 
+export interface SessionData {
+  userId: string;
+  createdAt: number;
+  lastVerifiedAt: number;
+}
+
+export interface PasswordResetToken {
+  token: string;
+  userId: string;
+  email: string;
+  expiresAt: number;
+  used: boolean;
+  createdAt: string;
+}
+
+export interface VerificationCode {
+  code: string;
+  userId: string;
+  email: string;
+  action: 'change_password' | 'delete_account';
+  expiresAt: number;
+  createdAt: string;
+}
+
 export interface DatabaseSchema {
   users: User[];
   shipments: Shipment[];
   tickets: SupportTicket[];
   alerts: InAppAlert[];
-  sessions: Record<string, string>; // token -> userId
+  sessions: Record<string, string | SessionData>; // token -> userId or SessionData
   emailIntegrations: Record<string, EmailIntegrationState>; // userId -> state
+  resetTokens?: PasswordResetToken[];
+  verificationCodes?: Record<string, VerificationCode>;
+  deletedUserIds?: string[];
+  deletedEmails?: string[];
 }
 
 const DATA_DIR = process.env.VERCEL
@@ -311,6 +339,10 @@ class Database {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
         if (!parsed.alerts) parsed.alerts = [];
+        if (!parsed.resetTokens) parsed.resetTokens = [];
+        if (!parsed.verificationCodes) parsed.verificationCodes = {};
+        if (!parsed.deletedUserIds) parsed.deletedUserIds = [];
+        if (!parsed.deletedEmails) parsed.deletedEmails = [];
         return parsed;
       }
       // On Vercel, if /tmp doesn't have the db yet, check if project seed exists
@@ -319,6 +351,10 @@ class Database {
         const raw = fs.readFileSync(seedFile, 'utf-8');
         const parsed = JSON.parse(raw);
         if (!parsed.alerts) parsed.alerts = [];
+        if (!parsed.resetTokens) parsed.resetTokens = [];
+        if (!parsed.verificationCodes) parsed.verificationCodes = {};
+        if (!parsed.deletedUserIds) parsed.deletedUserIds = [];
+        if (!parsed.deletedEmails) parsed.deletedEmails = [];
         this.save(parsed);
         return parsed;
       }
@@ -327,6 +363,10 @@ class Database {
     }
 
     const initial = initDefaultDatabase();
+    initial.resetTokens = [];
+    initial.verificationCodes = {};
+    initial.deletedUserIds = [];
+    initial.deletedEmails = [];
     this.save(initial);
     return initial;
   }
@@ -352,14 +392,20 @@ class Database {
   }
 
   getUserBySession(token: string): User | undefined {
-    const userId = this.data.sessions[token];
-    if (!userId) return undefined;
+    const sessionVal = this.data.sessions[token];
+    if (!sessionVal) return undefined;
+    const userId = typeof sessionVal === 'string' ? sessionVal : sessionVal.userId;
     return this.getUserById(userId);
   }
 
   createSession(userId: string): string {
     const token = 'sess_' + crypto.randomBytes(24).toString('hex');
-    this.data.sessions[token] = userId;
+    const now = Date.now();
+    this.data.sessions[token] = {
+      userId,
+      createdAt: now,
+      lastVerifiedAt: now,
+    };
     this.save();
     return token;
   }
@@ -369,11 +415,52 @@ class Database {
     this.save();
   }
 
+  isSessionRecent(token: string): boolean {
+    const sessionVal = this.data.sessions[token];
+    if (!sessionVal) return false;
+    if (typeof sessionVal === 'string') {
+      return false; // Legacy session requires fresh re-verification
+    }
+    // Consider recent if authenticated or verified within 15 minutes
+    return (Date.now() - sessionVal.lastVerifiedAt) < 15 * 60 * 1000;
+  }
+
+  refreshSessionVerification(token: string): void {
+    const sessionVal = this.data.sessions[token];
+    if (sessionVal) {
+      if (typeof sessionVal === 'object') {
+        sessionVal.lastVerifiedAt = Date.now();
+      } else {
+        this.data.sessions[token] = {
+          userId: sessionVal,
+          createdAt: Date.now(),
+          lastVerifiedAt: Date.now(),
+        };
+      }
+      this.save();
+    }
+  }
+
+  revokeAllSessions(userId: string): void {
+    for (const [t, s] of Object.entries(this.data.sessions)) {
+      const uid = typeof s === 'string' ? s : s.userId;
+      if (uid === userId) {
+        delete this.data.sessions[t];
+      }
+    }
+    this.save();
+  }
+
   createUser(name: string, email: string, password: string): User {
+    const normEmail = email.trim().toLowerCase();
+    // If this email was previously deleted, remove from tombstone so new account starts fresh
+    if (this.data.deletedEmails) {
+      this.data.deletedEmails = this.data.deletedEmails.filter((e) => e !== normEmail);
+    }
     const id = 'user_' + crypto.randomBytes(8).toString('hex');
     const newUser: User = {
       id,
-      email: email.trim().toLowerCase(),
+      email: normEmail,
       passwordHash: hashPassword(password),
       name: name.trim() || 'Parcel User',
       avatarInitial: (name.trim() || 'U')[0].toUpperCase(),
@@ -437,17 +524,209 @@ class Database {
     return user;
   }
 
-  deleteUser(userId: string): boolean {
+  // --- Password Recovery & Security ---
+  createPasswordResetToken(email: string): { token: string; user: User; expiresAt: number } | null {
+    const normEmail = email.trim().toLowerCase();
+    const user = this.getUserByEmail(normEmail);
+    if (!user) return null;
+
+    if (!this.data.resetTokens) this.data.resetTokens = [];
+
+    // Invalidate existing unused tokens for this user
+    for (const rt of this.data.resetTokens) {
+      if (rt.userId === user.id && !rt.used) {
+        rt.used = true;
+      }
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = Date.now() + 60 * 60 * 1000; // 1 hour
+
+    this.data.resetTokens.push({
+      token,
+      userId: user.id,
+      email: user.email,
+      expiresAt,
+      used: false,
+      createdAt: new Date().toISOString(),
+    });
+
+    this.save();
+    return { token, user, expiresAt };
+  }
+
+  verifyPasswordResetToken(token: string): { valid: boolean; reason?: string; email?: string } {
+    if (!token || !this.data.resetTokens) {
+      return { valid: false, reason: 'Missing or invalid password reset token.' };
+    }
+
+    const record = this.data.resetTokens.find((r) => r.token === token);
+    if (!record) {
+      return { valid: false, reason: 'Invalid password reset link. Please request a new one.' };
+    }
+
+    if (record.used) {
+      return { valid: false, reason: 'This password reset link has already been used. Please request a new one.' };
+    }
+
+    if (Date.now() > record.expiresAt) {
+      return { valid: false, reason: 'This password reset link has expired. Reset links are valid for 1 hour.' };
+    }
+
+    const user = this.getUserById(record.userId);
+    if (!user) {
+      return { valid: false, reason: 'Associated user account no longer exists.' };
+    }
+
+    return { valid: true, email: user.email };
+  }
+
+  consumePasswordReset(token: string, newPassword: string): { success: boolean; error?: string } {
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+      return { success: false, error: 'Password must be at least 8 characters long.' };
+    }
+
+    const verification = this.verifyPasswordResetToken(token);
+    if (!verification.valid) {
+      return { success: false, error: verification.reason };
+    }
+
+    const record = this.data.resetTokens!.find((r) => r.token === token)!;
+    const user = this.getUserById(record.userId);
+    if (!user) {
+      return { success: false, error: 'User account not found.' };
+    }
+
+    // Update password hash
+    user.passwordHash = hashPassword(newPassword);
+    record.used = true;
+
+    // Invalidate ALL existing sessions for this user so old logins are terminated
+    this.revokeAllSessions(user.id);
+
+    this.save();
+    return { success: true };
+  }
+
+  updateUserPassword(userId: string, newPassword: string): { success: boolean; error?: string } {
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+      return { success: false, error: 'Password must be at least 8 characters long.' };
+    }
+
+    const user = this.getUserById(userId);
+    if (!user) {
+      return { success: false, error: 'User account not found.' };
+    }
+
+    user.passwordHash = hashPassword(newPassword);
+    this.save();
+    return { success: true };
+  }
+
+  createVerificationCode(userId: string, action: 'change_password' | 'delete_account'): { code: string; email: string } {
+    const user = this.getUserById(userId);
+    if (!user) throw new Error('User not found');
+
+    if (!this.data.verificationCodes) this.data.verificationCodes = {};
+
+    const code = (100000 + crypto.randomInt(900000)).toString();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+    this.data.verificationCodes[userId] = {
+      code,
+      userId,
+      email: user.email,
+      action,
+      expiresAt,
+      createdAt: new Date().toISOString(),
+    };
+
+    this.save();
+    return { code, email: user.email };
+  }
+
+  verifyCode(userId: string, code: string, action: 'change_password' | 'delete_account'): boolean {
+    if (!this.data.verificationCodes || !this.data.verificationCodes[userId]) {
+      return false;
+    }
+
+    const record = this.data.verificationCodes[userId];
+    if (record.action !== action || record.code !== code.trim() || Date.now() > record.expiresAt) {
+      return false;
+    }
+
+    delete this.data.verificationCodes[userId];
+    this.save();
+    return true;
+  }
+
+  // --- Complete Account Deletion ---
+  deleteUserAccount(userId: string): {
+    success: boolean;
+    error?: string;
+    deletedCount: { shipments: number; tickets: number; alerts: number; sessionsRevoked: number };
+  } {
+    const user = this.getUserById(userId);
+    if (!user) {
+      return {
+        success: false,
+        error: 'User account not found or already deleted.',
+        deletedCount: { shipments: 0, tickets: 0, alerts: 0, sessionsRevoked: 0 },
+      };
+    }
+
+    if (!this.data.deletedUserIds) this.data.deletedUserIds = [];
+    if (!this.data.deletedEmails) this.data.deletedEmails = [];
+
+    // Tombstone user so seed never resurrects this account
+    if (!this.data.deletedUserIds.includes(userId)) {
+      this.data.deletedUserIds.push(userId);
+    }
+    if (!this.data.deletedEmails.includes(user.email.toLowerCase())) {
+      this.data.deletedEmails.push(user.email.toLowerCase());
+    }
+
+    const shipCount = this.data.shipments.filter((s) => s.userId === userId).length;
+    const ticketCount = this.data.tickets.filter((t) => t.userId === userId).length;
+    const alertCount = this.data.alerts.filter((a) => a.userId === userId).length;
+
+    let sessionsRevoked = 0;
+    for (const [t, s] of Object.entries(this.data.sessions)) {
+      const uid = typeof s === 'string' ? s : s.userId;
+      if (uid === userId) {
+        delete this.data.sessions[t];
+        sessionsRevoked++;
+      }
+    }
+
+    // Purge all records belonging to this user
     this.data.users = this.data.users.filter((u) => u.id !== userId);
     this.data.shipments = this.data.shipments.filter((s) => s.userId !== userId);
     this.data.tickets = this.data.tickets.filter((t) => t.userId !== userId);
     this.data.alerts = this.data.alerts.filter((a) => a.userId !== userId);
     delete this.data.emailIntegrations[userId];
-    for (const [t, uid] of Object.entries(this.data.sessions)) {
-      if (uid === userId) delete this.data.sessions[t];
+
+    if (this.data.verificationCodes) {
+      delete this.data.verificationCodes[userId];
     }
+    if (this.data.resetTokens) {
+      this.data.resetTokens = this.data.resetTokens.filter((r) => r.userId !== userId);
+    }
+
     this.save();
-    return true;
+    return {
+      success: true,
+      deletedCount: {
+        shipments: shipCount,
+        tickets: ticketCount,
+        alerts: alertCount,
+        sessionsRevoked,
+      },
+    };
+  }
+
+  deleteUser(userId: string): boolean {
+    return this.deleteUserAccount(userId).success;
   }
 
   // --- Shipments ---

@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { db, User, Shipment, TrackingEvent } from './src/server/db.js';
 import { detectCourier, isStoreOrderId, SUPPORTED_COURIERS, formatHonestEta } from './src/utils/courier.js';
 import { isShipmentRequiredForCategory, getCategoryLabel, validateAttachment } from './src/utils/support.js';
+import { emailService } from './src/server/email.js';
 
 dotenv.config();
 
@@ -26,7 +27,7 @@ declare global {
   }
 }
 
-// Authentication middleware
+// Authentication middleware - strictly requires valid session token
 function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   let token: string | undefined;
@@ -191,12 +192,167 @@ app.post('/api/auth/logout', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
-app.delete('/api/auth/account', authMiddleware, (req: Request, res: Response) => {
-  const user = req.user!;
-  db.deleteUser(user.id);
+// --- Password Recovery (Forgot Password & Reset) ---
+app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
+  const { email } = req.body;
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    return res.status(400).json({ error: 'A valid email address is required.' });
+  }
+
+  // Create expiring, single-use token if user exists
+  const tokenData = db.createPasswordResetToken(email);
+  if (tokenData) {
+    await emailService.sendPasswordResetEmail(tokenData.user.email, tokenData.user.name, tokenData.token);
+  }
+
+  // CRITICAL REQUIREMENT: Generic response that does not reveal whether the email is registered
   return res.json({
     success: true,
-    message: 'Account, saved shipments, and personal records permanently deleted.',
+    message: 'If an account is associated with this email, a password reset link has been dispatched.',
+  });
+});
+
+app.get('/api/auth/verify-reset-token', (req: Request, res: Response) => {
+  const token = req.query.token as string;
+  if (!token) {
+    return res.status(400).json({ valid: false, reason: 'Token parameter is required.' });
+  }
+
+  const result = db.verifyPasswordResetToken(token);
+  return res.json(result);
+});
+
+app.post('/api/auth/reset-password', (req: Request, res: Response) => {
+  const { token, newPassword, confirmPassword } = req.body;
+
+  if (!token || typeof token !== 'string') {
+    return res.status(400).json({ error: 'Reset token is required.' });
+  }
+
+  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+    return res.status(400).json({ error: 'New password must be at least 8 characters long.' });
+  }
+
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ error: 'Passwords do not match.' });
+  }
+
+  const result = db.consumePasswordReset(token, newPassword);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  return res.json({
+    success: true,
+    message: 'Password successfully reset. All existing sessions have been invalidated. Please sign in with your new password.',
+  });
+});
+
+// --- Session Verification & In-Settings Password Change ---
+app.get('/api/auth/session-status', authMiddleware, (req: Request, res: Response) => {
+  const isRecent = db.isSessionRecent(req.sessionToken!);
+  return res.json({
+    isRecent,
+    email: req.user!.email,
+  });
+});
+
+app.post('/api/auth/request-verification', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
+  const action = req.body.action === 'delete_account' ? 'delete_account' : 'change_password';
+
+  const { code, email } = db.createVerificationCode(user.id, action);
+  await emailService.sendVerificationCodeEmail(email, user.name, code, action);
+
+  return res.json({
+    success: true,
+    message: `A 6-digit security code has been sent to ${email}.`,
+  });
+});
+
+app.post('/api/auth/verify-session', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const { code, password, action } = req.body;
+  const targetAction = action === 'delete_account' ? 'delete_account' : 'change_password';
+
+  let verified = false;
+
+  if (password && typeof password === 'string') {
+    verified = db.verifyPassword(user, password);
+  } else if (code && typeof code === 'string') {
+    verified = db.verifyCode(user.id, code, targetAction);
+  }
+
+  if (!verified) {
+    return res.status(400).json({ error: 'Invalid verification code or password.' });
+  }
+
+  db.refreshSessionVerification(req.sessionToken!);
+  return res.json({ success: true, verified: true });
+});
+
+app.put('/api/auth/password', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const token = req.sessionToken!;
+
+  // Require recent session verification
+  if (!db.isSessionRecent(token)) {
+    return res.status(403).json({
+      error: 'Recent authentication or email verification required before updating password.',
+      needsVerification: true,
+    });
+  }
+
+  const { newPassword, confirmPassword } = req.body;
+
+  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+    return res.status(400).json({ error: 'New password must be at least 8 characters long.' });
+  }
+
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ error: 'Passwords do not match.' });
+  }
+
+  const result = db.updateUserPassword(user.id, newPassword);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  return res.json({
+    success: true,
+    message: 'Password successfully updated. Your account is secured.',
+  });
+});
+
+// --- Delete Account & All Data ---
+app.delete('/api/auth/account', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const token = req.sessionToken!;
+
+  // Verify recent session
+  if (!db.isSessionRecent(token)) {
+    return res.status(403).json({
+      error: 'Recent authentication or email verification required to delete your account.',
+      needsVerification: true,
+    });
+  }
+
+  const result = db.deleteUserAccount(user.id);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error || 'Failed to delete account.' });
+  }
+
+  return res.json({
+    success: true,
+    message: 'Your account, shipments, customer tickets, alerts, and sessions have been permanently deleted.',
+    deleted: result.deletedCount,
+  });
+});
+
+// --- Test Inbox (for verification and test automation) ---
+app.get('/api/auth/test-inbox', (req: Request, res: Response) => {
+  return res.json({
+    messages: emailService.getTestInbox(),
   });
 });
 
