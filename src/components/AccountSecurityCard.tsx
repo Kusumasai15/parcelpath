@@ -7,6 +7,8 @@ interface AccountSecurityCardProps {
   currentUser: UserProfile | null;
   onAccountDeleted: () => void;
   onNotice: (msg: string) => void;
+  onOpenAuth?: (view?: 'login' | 'register' | 'forgot_password') => void;
+  onRequireReauth?: () => void;
 }
 
 export const AccountSecurityCard: React.FC<AccountSecurityCardProps> = ({
@@ -14,6 +16,8 @@ export const AccountSecurityCard: React.FC<AccountSecurityCardProps> = ({
   currentUser,
   onAccountDeleted,
   onNotice,
+  onOpenAuth,
+  onRequireReauth,
 }) => {
   // Password Change State
   const [isChangingPassword, setIsChangingPassword] = useState(false);
@@ -43,8 +47,95 @@ export const AccountSecurityCard: React.FC<AccountSecurityCardProps> = ({
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+async function safeParseJson(res: Response): Promise<{ ok: boolean; status: number; data: any; error?: string }> {
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    try {
+      const data = await res.json();
+      return { ok: res.ok, status: res.status, data, error: data.error };
+    } catch {
+      return { ok: res.ok, status: res.status, data: {}, error: 'Invalid JSON response from server.' };
+    }
+  }
+  const text = await res.text().catch(() => '');
+  const snippet = text.slice(0, 150).replace(/<[^>]+>/g, '').trim();
+  return {
+    ok: false,
+    status: res.status,
+    data: {},
+    error: res.status === 404
+      ? 'Endpoint not found (404).'
+      : `Server returned ${res.status}${snippet ? `: ${snippet}` : ''}`,
+  };
+}
+
   if (!currentUser || !sessionToken) {
-    return null;
+    return (
+      <article className="settings-card">
+        <h2>Account security &amp; password</h2>
+        <p className="support-copy">Update your account password or manage security settings.</p>
+
+        <div style={{ marginTop: '16px' }}>
+          <div
+            style={{
+              padding: '16px',
+              borderRadius: '10px',
+              border: '1px solid var(--line)',
+              background: 'var(--surface)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+              <KeyRound size={18} style={{ color: 'var(--amber)' }} />
+              <strong style={{ fontSize: '13px' }}>Change password</strong>
+            </div>
+            <p style={{ margin: '0 0 14px', fontSize: '12px', color: 'var(--muted)', lineHeight: '1.45' }}>
+              You are currently signed out. Sign in or complete verified recovery before changing your password.
+            </p>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => onOpenAuth?.('login')}
+              >
+                Sign in to change password
+              </button>
+              <button
+                type="button"
+                className="details"
+                onClick={() => onOpenAuth?.('forgot_password')}
+              >
+                Forgot password?
+              </button>
+            </div>
+          </div>
+
+          <div
+            style={{
+              padding: '16px',
+              borderRadius: '10px',
+              border: '1px solid var(--line)',
+              background: 'var(--surface)',
+              marginTop: '12px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+              <Trash2 size={18} style={{ color: '#fc8181' }} />
+              <strong style={{ fontSize: '13px', color: '#fc8181' }}>Delete account &amp; all data</strong>
+            </div>
+            <p style={{ margin: '0 0 14px', fontSize: '12px', color: 'var(--muted)', lineHeight: '1.45' }}>
+              Sign in to permanently erase your account, all shipments, customer care tickets, and preferences.
+            </p>
+            <button
+              type="button"
+              className="danger"
+              onClick={() => onOpenAuth?.('login')}
+            >
+              Sign in to delete account
+            </button>
+          </div>
+        </div>
+      </article>
+    );
   }
 
   // 1. Initiate Change Password
@@ -171,6 +262,23 @@ export const AccountSecurityCard: React.FC<AccountSecurityCardProps> = ({
           throw new Error('Your session has timed out. Please re-verify to change your password.');
         }
         throw new Error(data.error || 'Failed to update password.');
+      }
+
+      if (data.sessionsRevoked) {
+        setPasswordSuccess('Password successfully updated! All sessions have been revoked. Redirecting to sign in...');
+        onNotice('Password updated. Please sign in with your new password.');
+        setNewPassword('');
+        setConfirmPassword('');
+        setTimeout(() => {
+          setIsChangingPassword(false);
+          setPasswordSuccess(null);
+          if (onRequireReauth) {
+            onRequireReauth();
+          } else {
+            onAccountDeleted();
+          }
+        }, 2200);
+        return;
       }
 
       setPasswordSuccess('Password successfully updated! All other active sessions have been invalidated.');

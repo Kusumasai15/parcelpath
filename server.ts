@@ -17,6 +17,21 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
+// Normalize incoming paths so routes match whether called with /api/ or rewritten on Vercel
+app.use((req: Request, _res: Response, next: NextFunction) => {
+  if (!req.url.startsWith('/api') && (
+    req.url.startsWith('/auth') ||
+    req.url.startsWith('/shipments') ||
+    req.url.startsWith('/notifications') ||
+    req.url.startsWith('/tickets') ||
+    req.url.startsWith('/config') ||
+    req.url.startsWith('/couriers')
+  )) {
+    req.url = '/api' + req.url;
+  }
+  next();
+});
+
 // Extend express Request to include currentUser
 declare global {
   namespace Express {
@@ -40,7 +55,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
 
   if (token) {
     const user = db.getUserBySession(token);
-    if (user && user.id !== 'user_kusuma_default') {
+    if (user) {
       req.user = user;
       req.sessionToken = token;
       return next();
@@ -51,31 +66,163 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
 }
 
 // --- Auth Routes ---
-app.post('/api/auth/register', (req: Request, res: Response) => {
+app.post('/api/auth/register', async (req: Request, res: Response) => {
   const { name, email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required.' });
   }
 
-  const existing = db.getUserByEmail(email);
-  if (existing) {
-    return res.status(409).json({ error: 'An account with this email already exists.' });
+  if (typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
   }
 
-  const user = db.createUser(name || 'Parcel User', email, password);
-  const token = db.createSession(user.id);
+  const normEmail = (email || '').trim().toLowerCase();
+  const existing = db.getUserByEmail(normEmail);
+
+  if (existing) {
+    if (existing.emailVerified !== false) {
+      return res.status(409).json({
+        error: 'An account with this email already exists. Please sign in or reset your password.',
+        code: 'ACCOUNT_EXISTS',
+        action: 'sign_in',
+      });
+    }
+
+    // Existing unverified account: resend verification with cooldown
+    const cooldownMs = 60 * 1000;
+    const elapsed = Date.now() - (existing.lastVerificationSentAt || 0);
+    if (elapsed < cooldownMs) {
+      const waitSec = Math.ceil((cooldownMs - elapsed) / 1000);
+      return res.status(429).json({
+        error: `A verification email was already sent recently. Please check your inbox or wait ${waitSec}s to resend.`,
+        code: 'VERIFICATION_COOLDOWN',
+        cooldownRemaining: waitSec,
+        email: existing.email,
+        requiresVerification: true,
+      });
+    }
+
+    const tokenData = db.createAccountVerificationToken(existing.id);
+    const emailResult = await emailService.sendAccountVerificationEmail(
+      existing.email,
+      existing.name,
+      tokenData.token,
+      tokenData.code
+    );
+
+    return res.status(200).json({
+      success: true,
+      requiresVerification: true,
+      email: existing.email,
+      deliveredViaProvider: emailResult.deliveredViaProvider,
+      verificationUrl: !emailResult.deliveredViaProvider ? emailResult.verificationUrl : undefined,
+      message: emailResult.deliveredViaProvider
+        ? 'A fresh verification email has been sent to your inbox.'
+        : 'Verification link generated. (External email provider unverified; verify using the link below).',
+    });
+  }
+
+  const user = db.createUser(name || 'Parcel User', normEmail, password, false);
+  const tokenData = db.createAccountVerificationToken(user.id);
+  const emailResult = await emailService.sendAccountVerificationEmail(
+    user.email,
+    user.name,
+    tokenData.token,
+    tokenData.code
+  );
+
+  return res.status(201).json({
+    success: true,
+    requiresVerification: true,
+    email: user.email,
+    deliveredViaProvider: emailResult.deliveredViaProvider,
+    verificationUrl: !emailResult.deliveredViaProvider ? emailResult.verificationUrl : undefined,
+    verificationCode: !emailResult.deliveredViaProvider ? tokenData.code : undefined,
+    message: emailResult.deliveredViaProvider
+      ? 'Account created! Please check your inbox to verify your email.'
+      : 'Account created! (External email provider unverified; verify using the code or link below).',
+  });
+});
+
+app.post('/api/auth/resend-verification', async (req: Request, res: Response) => {
+  const { email } = req.body;
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    return res.status(400).json({ error: 'A valid email address is required.' });
+  }
+
+  const normEmail = email.trim().toLowerCase();
+  const user = db.getUserByEmail(normEmail);
+
+  if (!user) {
+    return res.json({
+      success: true,
+      message: 'If an unverified account exists for this email, a verification link has been sent.',
+    });
+  }
+
+  if (user.emailVerified !== false) {
+    return res.json({
+      success: true,
+      alreadyVerified: true,
+      message: 'Your account is already verified. You can sign in directly.',
+    });
+  }
+
+  const cooldownMs = 60 * 1000;
+  const elapsed = Date.now() - (user.lastVerificationSentAt || 0);
+  if (elapsed < cooldownMs) {
+    const waitSec = Math.ceil((cooldownMs - elapsed) / 1000);
+    return res.status(429).json({
+      error: `Please wait ${waitSec} seconds before requesting another verification email.`,
+      cooldownRemaining: waitSec,
+    });
+  }
+
+  const tokenData = db.createAccountVerificationToken(user.id);
+  const emailResult = await emailService.sendAccountVerificationEmail(
+    user.email,
+    user.name,
+    tokenData.token,
+    tokenData.code
+  );
 
   return res.json({
-    token,
+    success: true,
+    deliveredViaProvider: emailResult.deliveredViaProvider,
+    verificationUrl: !emailResult.deliveredViaProvider ? emailResult.verificationUrl : undefined,
+    verificationCode: !emailResult.deliveredViaProvider ? tokenData.code : undefined,
+    message: emailResult.deliveredViaProvider
+      ? 'Verification email has been sent. Please check your inbox.'
+      : 'Verification link & code generated (External email provider unverified; verify below).',
+  });
+});
+
+app.post('/api/auth/verify-email', (req: Request, res: Response) => {
+  const { token, code } = req.body;
+  const tokenOrCode = (token || code || '').trim();
+  if (!tokenOrCode) {
+    return res.status(400).json({ error: 'Verification token or code is required.' });
+  }
+
+  const result = db.verifyAccountEmail(tokenOrCode);
+  if (!result.success || !result.user) {
+    return res.status(400).json({ error: result.error || 'Invalid or expired verification token.' });
+  }
+
+  const sessionToken = db.createSession(result.user.id);
+  return res.json({
+    success: true,
+    message: 'Email successfully verified! Welcome to ParcelPath.',
+    token: sessionToken,
     user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      avatarInitial: user.avatarInitial,
-      role: user.role,
-      notifications: user.notifications,
-      backupRecipient: user.backupRecipient,
-      deliveryInstructions: user.deliveryInstructions,
+      id: result.user.id,
+      email: result.user.email,
+      name: result.user.name,
+      avatarInitial: result.user.avatarInitial,
+      role: result.user.role,
+      notifications: result.user.notifications,
+      backupRecipient: result.user.backupRecipient,
+      deliveryInstructions: result.user.deliveryInstructions,
     },
   });
 });
@@ -86,9 +233,23 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Email and password are required.' });
   }
 
-  const user = db.getUserByEmail(email);
+  const normEmail = (email || '').trim().toLowerCase();
+  const user = db.getUserByEmail(normEmail);
+
   if (!user || !db.verifyPassword(user, password)) {
     return res.status(401).json({ error: 'Invalid email or password.' });
+  }
+
+  // Check email verification status
+  if (user.emailVerified === false) {
+    const tokenData = db.createAccountVerificationToken(user.id);
+    return res.status(403).json({
+      error: 'Your email address is not verified yet. Please check your inbox or verify using the code below.',
+      code: 'EMAIL_NOT_VERIFIED',
+      email: user.email,
+      verificationCode: tokenData.code,
+      verificationUrl: `${emailService.getBaseUrl()}/?verify_token=${encodeURIComponent(tokenData.token)}`,
+    });
   }
 
   const token = db.createSession(user.id);
@@ -107,50 +268,7 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   });
 });
 
-// Password recovery must not bypass email ownership verification.
-// Enable a real recovery provider with durable token storage before sending reset links.
-app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
-  res.setHeader('Cache-Control', 'no-store');
-  const { email } = req.body;
-  if (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-    return res.status(400).json({ error: 'Enter a valid email address.' });
-  }
-  return res.status(503).json({
-    error: 'Password reset emails are not available yet. No reset email has been sent. If you are still signed in and know your current password, you can change it in Account settings.',
-  });
-});
-
-const passwordAttempts = new Map<string, { count: number; until: number }>();
-app.post('/api/auth/change-password', authMiddleware, (req: Request, res: Response) => {
-  res.setHeader('Cache-Control', 'no-store');
-  const user = req.user!;
-  const { currentPassword, newPassword } = req.body;
-  if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 128) {
-    return res.status(400).json({ error: 'Enter your current password.' });
-  }
-  if (typeof newPassword !== 'string' || newPassword.length < 12 || newPassword.length > 128) {
-    return res.status(400).json({ error: 'Use 12–128 characters for your new password.' });
-  }
-  const now = Date.now();
-  for (const [id, entry] of passwordAttempts) {
-    if (entry.until <= now) passwordAttempts.delete(id);
-  }
-  const attempts = passwordAttempts.get(user.id) || { count: 0, until: now + 15 * 60 * 1000 };
-  if (attempts.count >= 5) {
-    return res.status(429).json({ error: 'Too many incorrect attempts. Try again in 15 minutes.' });
-  }
-  if (!db.verifyPassword(user, currentPassword)) {
-    attempts.count++;
-    passwordAttempts.set(user.id, attempts);
-    return res.status(400).json({ error: 'Your current password is incorrect.' });
-  }
-  if (currentPassword === newPassword) {
-    return res.status(400).json({ error: 'Choose a password different from your current password.' });
-  }
-  db.changePassword(user.id, newPassword);
-  passwordAttempts.delete(user.id);
-  return res.json({ success: true, message: 'Password changed. Sign in again with your new password.' });
-});
+// Note: Password recovery and recent-session-protected password change routes are defined below.
 
 app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
@@ -291,7 +409,7 @@ app.post('/api/auth/verify-session', authMiddleware, (req: Request, res: Respons
   return res.json({ success: true, verified: true });
 });
 
-app.put('/api/auth/password', authMiddleware, (req: Request, res: Response) => {
+const handlePasswordUpdate = (req: Request, res: Response) => {
   const user = req.user!;
   const token = req.sessionToken!;
 
@@ -320,14 +438,28 @@ app.put('/api/auth/password', authMiddleware, (req: Request, res: Response) => {
 
   return res.json({
     success: true,
-    message: 'Password successfully updated. Your account is secured.',
+    sessionsRevoked: true,
+    message: 'Password successfully updated. All sessions have been revoked. Please sign in with your new password.',
   });
-});
+};
+
+app.put('/api/auth/password', authMiddleware, handlePasswordUpdate);
+app.post('/api/auth/change-password', authMiddleware, handlePasswordUpdate);
 
 // --- Delete Account & All Data ---
 app.delete('/api/auth/account', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
   const token = req.sessionToken!;
+  const { code } = req.body || {};
+
+  if (code && typeof code === 'string' && code.trim().length === 6) {
+    const verified = db.verifyCode(user.id, code.trim(), 'delete_account');
+    if (verified) {
+      db.refreshSessionVerification(token);
+    } else {
+      return res.status(400).json({ error: 'Invalid or expired 6-digit security code.' });
+    }
+  }
 
   // Verify recent session
   if (!db.isSessionRecent(token)) {
@@ -802,6 +934,11 @@ app.get('/api/config/support', (req: Request, res: Response) => {
       ? undefined
       : 'Official support telephone and WhatsApp lines are currently not configured for direct inbound dialing. Please submit a support request using the form below.',
   });
+});
+
+// JSON 404 handler for all unmatched API routes - prevents returning HTML on failed API requests
+app.all('/api/*', (req: Request, res: Response) => {
+  return res.status(404).json({ error: `API route not found: ${req.method} ${req.url}` });
 });
 
 // --- Production / Dev Server Mounting ---

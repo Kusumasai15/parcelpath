@@ -15,6 +15,8 @@ export interface User {
     arrivalReminders: boolean;
   };
   role: 'user' | 'staff' | 'admin';
+  emailVerified?: boolean;
+  lastVerificationSentAt?: number;
   createdAt: string;
 }
 
@@ -123,6 +125,16 @@ export interface VerificationCode {
   createdAt: string;
 }
 
+export interface AccountVerificationToken {
+  token: string;
+  code: string;
+  userId: string;
+  email: string;
+  expiresAt: number;
+  used: boolean;
+  createdAt: string;
+}
+
 export interface DatabaseSchema {
   users: User[];
   shipments: Shipment[];
@@ -132,6 +144,7 @@ export interface DatabaseSchema {
   emailIntegrations: Record<string, EmailIntegrationState>; // userId -> state
   resetTokens?: PasswordResetToken[];
   verificationCodes?: Record<string, VerificationCode>;
+  verificationTokens?: AccountVerificationToken[];
   deletedUserIds?: string[];
   deletedEmails?: string[];
 }
@@ -167,6 +180,7 @@ function initDefaultDatabase(): DatabaseSchema {
       arrivalReminders: true,
     },
     role: 'user',
+    emailVerified: true,
     createdAt: nowIso,
   };
 
@@ -304,16 +318,12 @@ function initDefaultDatabase(): DatabaseSchema {
     },
   ];
 
-  const defaultToken = 'demo_session_token_kusuma';
-
   return {
     users: [defaultUser],
     shipments: defaultShipments,
     tickets: [],
     alerts: defaultAlerts,
-    sessions: {
-      [defaultToken]: defaultUserId,
-    },
+    sessions: {},
     emailIntegrations: {
       [defaultUserId]: {
         status: 'disconnected',
@@ -341,8 +351,13 @@ class Database {
         if (!parsed.alerts) parsed.alerts = [];
         if (!parsed.resetTokens) parsed.resetTokens = [];
         if (!parsed.verificationCodes) parsed.verificationCodes = {};
-        if (!parsed.deletedUserIds) parsed.deletedUserIds = [];
-        if (!parsed.deletedEmails) parsed.deletedEmails = [];
+        if (!parsed.verificationTokens) parsed.verificationTokens = [];
+        if (parsed.deletedUserIds && parsed.deletedUserIds.length > 0) {
+          parsed.users = (parsed.users || []).filter((u: any) => !parsed.deletedUserIds.includes(u.id));
+          parsed.shipments = (parsed.shipments || []).filter((s: any) => !parsed.deletedUserIds.includes(s.userId));
+          parsed.tickets = (parsed.tickets || []).filter((t: any) => !parsed.deletedUserIds.includes(t.userId));
+          parsed.alerts = (parsed.alerts || []).filter((a: any) => !parsed.deletedUserIds.includes(a.userId));
+        }
         return parsed;
       }
       // On Vercel, if /tmp doesn't have the db yet, check if project seed exists
@@ -353,8 +368,15 @@ class Database {
         if (!parsed.alerts) parsed.alerts = [];
         if (!parsed.resetTokens) parsed.resetTokens = [];
         if (!parsed.verificationCodes) parsed.verificationCodes = {};
+        if (!parsed.verificationTokens) parsed.verificationTokens = [];
         if (!parsed.deletedUserIds) parsed.deletedUserIds = [];
         if (!parsed.deletedEmails) parsed.deletedEmails = [];
+        if (parsed.deletedUserIds && parsed.deletedUserIds.length > 0) {
+          parsed.users = (parsed.users || []).filter((u: any) => !parsed.deletedUserIds.includes(u.id));
+          parsed.shipments = (parsed.shipments || []).filter((s: any) => !parsed.deletedUserIds.includes(s.userId));
+          parsed.tickets = (parsed.tickets || []).filter((t: any) => !parsed.deletedUserIds.includes(t.userId));
+          parsed.alerts = (parsed.alerts || []).filter((a: any) => !parsed.deletedUserIds.includes(a.userId));
+        }
         this.save(parsed);
         return parsed;
       }
@@ -365,6 +387,7 @@ class Database {
     const initial = initDefaultDatabase();
     initial.resetTokens = [];
     initial.verificationCodes = {};
+    initial.verificationTokens = [];
     initial.deletedUserIds = [];
     initial.deletedEmails = [];
     this.save(initial);
@@ -372,13 +395,25 @@ class Database {
   }
 
   private save(dataToSave?: DatabaseSchema) {
+    const payload = JSON.stringify(dataToSave || this.data, null, 2);
     try {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
-      fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave || this.data, null, 2), 'utf-8');
+      fs.writeFileSync(DB_FILE, payload, 'utf-8');
     } catch (e) {
-      console.warn('Warning: Could not persist database to filesystem (running in-memory):', e);
+      console.warn('Warning: Could not persist database to primary filesystem (running in-memory):', e);
+    }
+
+    const seedFile = path.resolve(process.cwd(), 'data', 'db.json');
+    if (seedFile !== DB_FILE) {
+      try {
+        const seedDir = path.dirname(seedFile);
+        if (!fs.existsSync(seedDir)) fs.mkdirSync(seedDir, { recursive: true });
+        fs.writeFileSync(seedFile, payload, 'utf-8');
+      } catch {
+        // Ignored in read-only environments
+      }
     }
   }
 
@@ -451,7 +486,7 @@ class Database {
     this.save();
   }
 
-  createUser(name: string, email: string, password: string): User {
+  createUser(name: string, email: string, password: string, emailVerified: boolean = false): User {
     const normEmail = email.trim().toLowerCase();
     // If this email was previously deleted, remove from tombstone so new account starts fresh
     if (this.data.deletedEmails) {
@@ -471,12 +506,80 @@ class Database {
         arrivalReminders: true,
       },
       role: 'user',
+      emailVerified,
       createdAt: new Date().toISOString(),
     };
 
     this.data.users.push(newUser);
     this.save();
     return newUser;
+  }
+
+  createAccountVerificationToken(userId: string): { token: string; code: string; expiresAt: number; user: User } {
+    const user = this.getUserById(userId);
+    if (!user) throw new Error('User not found');
+
+    if (!this.data.verificationTokens) this.data.verificationTokens = [];
+
+    // Invalidate prior unused tokens for this user
+    for (const vt of this.data.verificationTokens) {
+      if (vt.userId === userId && !vt.used) {
+        vt.used = true;
+      }
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const code = (100000 + crypto.randomInt(900000)).toString();
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+
+    this.data.verificationTokens.push({
+      token,
+      code,
+      userId,
+      email: user.email,
+      expiresAt,
+      used: false,
+      createdAt: new Date().toISOString(),
+    });
+
+    user.lastVerificationSentAt = Date.now();
+    this.save();
+
+    return { token, code, expiresAt, user };
+  }
+
+  verifyAccountEmail(tokenOrCode: string): { success: boolean; user?: User; error?: string } {
+    if (!tokenOrCode || !this.data.verificationTokens) {
+      return { success: false, error: 'Verification token or code is required.' };
+    }
+
+    const cleanInput = tokenOrCode.trim();
+    const record = this.data.verificationTokens.find(
+      (vt) => (vt.token === cleanInput || vt.code === cleanInput)
+    );
+
+    if (!record) {
+      return { success: false, error: 'Invalid verification token or code.' };
+    }
+
+    if (record.used) {
+      return { success: false, error: 'This verification link has already been used. Please sign in.' };
+    }
+
+    if (Date.now() > record.expiresAt) {
+      return { success: false, error: 'Verification link has expired. Please request a new one.' };
+    }
+
+    const user = this.getUserById(record.userId);
+    if (!user) {
+      return { success: false, error: 'User account not found.' };
+    }
+
+    record.used = true;
+    user.emailVerified = true;
+    this.save();
+
+    return { success: true, user };
   }
 
   verifyPassword(user: User, password: string): boolean {
@@ -608,7 +711,7 @@ class Database {
     return { success: true };
   }
 
-  updateUserPassword(userId: string, newPassword: string): { success: boolean; error?: string } {
+  updateUserPassword(userId: string, newPassword: string, keepSessionToken?: string): { success: boolean; error?: string } {
     if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
       return { success: false, error: 'Password must be at least 8 characters long.' };
     }
@@ -619,6 +722,15 @@ class Database {
     }
 
     user.passwordHash = hashPassword(newPassword);
+
+    // Invalidate other sessions
+    for (const [token, s] of Object.entries(this.data.sessions)) {
+      const uid = typeof s === 'string' ? s : s.userId;
+      if (uid === userId && token !== keepSessionToken) {
+        delete this.data.sessions[token];
+      }
+    }
+
     this.save();
     return { success: true };
   }
@@ -711,6 +823,9 @@ class Database {
     }
     if (this.data.resetTokens) {
       this.data.resetTokens = this.data.resetTokens.filter((r) => r.userId !== userId);
+    }
+    if (this.data.verificationTokens) {
+      this.data.verificationTokens = this.data.verificationTokens.filter((vt) => vt.userId !== userId);
     }
 
     this.save();

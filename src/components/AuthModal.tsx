@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, CheckCircle2, ArrowLeft } from 'lucide-react';
+import { Eye, EyeOff, CheckCircle2, ArrowLeft, Mail, RefreshCw, AlertCircle } from 'lucide-react';
 import { UserProfile } from '../types';
 
 interface AuthModalProps {
@@ -21,7 +21,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   initialEmail = '',
   initialView = 'login',
 }) => {
-  const [view, setView] = useState<'login' | 'register' | 'forgot_password'>(initialView);
+  const [view, setView] = useState<'login' | 'register' | 'forgot_password' | 'verify_pending'>(initialView);
   const [name, setName] = useState('');
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
@@ -29,10 +29,28 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Verification state
+  const [verificationEmail, setVerificationEmail] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
+  const [verificationUrl, setVerificationUrl] = useState<string | null>(null);
+  const [cooldown, setCooldown] = useState(0);
+  const [resendLoading, setResendLoading] = useState(false);
+  const [isUnverifiedNotice, setIsUnverifiedNotice] = useState(false);
+
   // Forgot password state
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotSuccess, setForgotSuccess] = useState<string | null>(null);
   const [testResetUrl, setTestResetUrl] = useState<string | null>(null);
+
+  // Cooldown countdown timer
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const interval = setInterval(() => {
+      setCooldown((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [cooldown]);
 
   useEffect(() => {
     if (isOpen) {
@@ -44,18 +62,43 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setError(null);
       setForgotSuccess(null);
       setTestResetUrl(null);
+      setIsUnverifiedNotice(false);
     }
   }, [isOpen, initialView, initialEmail]);
 
   if (!isOpen) return null;
 
+async function parseSafeResponse(res: Response): Promise<{ ok: boolean; status: number; data: any; error?: string }> {
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    try {
+      const data = await res.json();
+      return { ok: res.ok, status: res.status, data, error: data.error };
+    } catch {
+      return { ok: res.ok, status: res.status, data: {}, error: 'Invalid JSON response from server.' };
+    }
+  }
+  const text = await res.text().catch(() => '');
+  const snippet = text.slice(0, 150).replace(/<[^>]+>/g, '').trim();
+  return {
+    ok: false,
+    status: res.status,
+    data: {},
+    error: res.status === 404
+      ? 'Authentication service endpoint not found (404). Please ensure the backend server is running.'
+      : `Server returned an error (${res.status})${snippet ? `: ${snippet}` : ''}`,
+  };
+}
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setIsUnverifiedNotice(false);
 
+    const normEmail = email.trim().toLowerCase();
     const endpoint = view === 'register' ? '/api/auth/register' : '/api/auth/login';
-    const payload = view === 'register' ? { name, email, password } : { email, password };
+    const payload = view === 'register' ? { name, email: normEmail, password } : { email: normEmail, password };
 
     try {
       const res = await fetch(endpoint, {
@@ -64,9 +107,32 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Authentication failed.');
+      const parsed = await parseSafeResponse(res);
+      const data = parsed.data;
+
+      if (!parsed.ok) {
+        if (data.code === 'EMAIL_NOT_VERIFIED') {
+          setIsUnverifiedNotice(true);
+          setVerificationEmail(normEmail);
+          if (data.verificationUrl) setVerificationUrl(data.verificationUrl);
+          if (data.verificationCode) setVerificationCode(data.verificationCode);
+          setError('Your email address is not verified yet. Please check your inbox or verify using the code below.');
+          return;
+        }
+        if (data.code === 'ACCOUNT_EXISTS') {
+          throw new Error(data.error || 'An account with this email already exists. Please sign in or reset your password.');
+        }
+        throw new Error(parsed.error || data.error || 'Authentication failed.');
+      }
+
+      if (view === 'register' && data.requiresVerification) {
+        setVerificationEmail(normEmail);
+        setVerificationUrl(data.verificationUrl || null);
+        if (data.verificationCode) setVerificationCode(data.verificationCode);
+        setVerificationNotice(data.message || 'Please check your email to verify your account.');
+        setView('verify_pending');
+        setCooldown(60);
+        return;
       }
 
       onLoginSuccess(data.user, data.token);
@@ -74,6 +140,82 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Authentication failed.';
       setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendVerification = async (targetEmail: string) => {
+    if (cooldown > 0 || resendLoading) return;
+    setResendLoading(true);
+    setError(null);
+
+    try {
+      const res = await fetch('/api/auth/resend-verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: targetEmail.trim().toLowerCase() }),
+      });
+
+      const parsed = await parseSafeResponse(res);
+      const data = parsed.data;
+
+      if (!parsed.ok) {
+        if (data.cooldownRemaining) {
+          setCooldown(data.cooldownRemaining);
+        }
+        throw new Error(parsed.error || data.error || 'Failed to resend verification email.');
+      }
+
+      setCooldown(60);
+      setVerificationEmail(targetEmail);
+      if (data.verificationUrl) {
+        setVerificationUrl(data.verificationUrl);
+      }
+      if (data.verificationCode) {
+        setVerificationCode(data.verificationCode);
+      }
+      setVerificationNotice(data.message || 'A fresh verification email has been sent.');
+      if (view !== 'verify_pending') {
+        setView('verify_pending');
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to resend verification.');
+    } finally {
+      setResendLoading(false);
+    }
+  };
+
+  const handleVerifyCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!verificationCode.trim()) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const res = await fetch('/api/auth/verify-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: verificationCode.trim() }),
+      });
+
+      const parsed = await parseSafeResponse(res);
+      const data = parsed.data;
+
+      if (!parsed.ok) {
+        throw new Error(parsed.error || data.error || 'Invalid or expired verification code.');
+      }
+
+      if (data.token && data.user) {
+        onLoginSuccess(data.user, data.token);
+        onClose();
+      } else {
+        setView('login');
+        setError(null);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Verification failed.');
     } finally {
       setLoading(false);
     }
@@ -90,12 +232,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       const res = await fetch('/api/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: forgotEmail.trim() }),
+        body: JSON.stringify({ email: forgotEmail.trim().toLowerCase() }),
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to dispatch reset link.');
+      const parsed = await parseSafeResponse(res);
+      const data = parsed.data;
+
+      if (!parsed.ok) {
+        throw new Error(parsed.error || data.error || 'Failed to dispatch reset link.');
       }
 
       // CRITICAL: Generic response that does not reveal registration status
@@ -106,40 +250,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         const inboxRes = await fetch('/api/auth/test-inbox');
         if (inboxRes.ok) {
           const inboxData = await inboxRes.json();
-          const latest = (inboxData.messages || []).find((m: any) => m.type === 'password_reset' && m.to.toLowerCase() === forgotEmail.trim().toLowerCase());
+          const latest = (inboxData.messages || []).find(
+            (m: any) => m.type === 'password_reset' && m.to.toLowerCase() === forgotEmail.trim().toLowerCase()
+          );
           if (latest?.resetUrl) {
             setTestResetUrl(latest.resetUrl);
           }
         }
       } catch (ignored) {
-        // Test inbox check optional
+        // Optional
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to send password reset request.';
       setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const switchToDemo = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'saddikutikusumasai@gmail.com', password: 'welcome123' }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        onLoginSuccess(data.user, data.token);
-        onClose();
-      } else {
-        setError(data.error || 'Demo account is not available.');
-      }
-    } catch (e) {
-      console.error(e);
-      setError('Failed to connect to demo account.');
     } finally {
       setLoading(false);
     }
@@ -158,6 +281,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   ? 'Your Account'
                   : view === 'forgot_password'
                   ? 'Reset Password'
+                  : view === 'verify_pending'
+                  ? 'Verify Your Email'
                   : view === 'register'
                   ? 'Create ParcelPath Account'
                   : 'Sign in to ParcelPath'}
@@ -167,6 +292,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   ? `Signed in as ${currentUser.name} (${currentUser.email})`
                   : view === 'forgot_password'
                   ? 'Enter your registered email to receive an expiring reset link.'
+                  : view === 'verify_pending'
+                  ? `Enter the 6-digit code or click the link sent to ${verificationEmail}.`
                   : 'Manage multiple deliveries across sessions and devices.'}
               </p>
             </div>
@@ -212,6 +339,138 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   Sign out
                 </button>
               </div>
+            </div>
+          ) : view === 'verify_pending' ? (
+            /* EMAIL VERIFICATION PENDING VIEW */
+            <div style={{ marginTop: '16px' }}>
+              {error && (
+                <div
+                  style={{
+                    padding: '10px 12px',
+                    marginBottom: '14px',
+                    borderRadius: '9px',
+                    backgroundColor: 'rgba(229, 62, 62, 0.12)',
+                    border: '1px solid #e53e3e',
+                    color: '#fc8181',
+                    fontSize: '11px',
+                  }}
+                >
+                  {error}
+                </div>
+              )}
+
+              {verificationNotice && (
+                <div
+                  style={{
+                    padding: '12px',
+                    borderRadius: '8px',
+                    backgroundColor: 'color-mix(in srgb, #38a169 15%, var(--page))',
+                    border: '1px solid color-mix(in srgb, #38a169 35%, var(--line))',
+                    marginBottom: '16px',
+                    fontSize: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <CheckCircle2 size={16} style={{ color: '#38a169', flexShrink: 0 }} />
+                  <span>{verificationNotice}</span>
+                </div>
+              )}
+
+              {verificationUrl && (
+                <div
+                  style={{
+                    padding: '12px',
+                    borderRadius: '8px',
+                    background: 'var(--surface-raised)',
+                    border: '1px dashed var(--amber)',
+                    marginBottom: '16px',
+                  }}
+                >
+                  <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--amber)', display: 'block', marginBottom: '4px' }}>
+                    🔗 Direct Verification Link:
+                  </span>
+                  <a
+                    href={verificationUrl}
+                    style={{
+                      fontSize: '11px',
+                      color: 'var(--ink)',
+                      wordBreak: 'break-all',
+                      textDecoration: 'underline',
+                      fontWeight: 500,
+                    }}
+                  >
+                    Click to Verify Email &amp; Activate Account →
+                  </a>
+                </div>
+              )}
+
+              <form onSubmit={handleVerifyCode}>
+                <div style={{ marginBottom: '16px' }}>
+                  <label
+                    htmlFor="verify-input-code"
+                    style={{ display: 'block', fontSize: '11px', color: 'var(--muted)', marginBottom: '5px', fontWeight: 600 }}
+                  >
+                    6-Digit Security Code
+                  </label>
+                  <input
+                    id="verify-input-code"
+                    type="text"
+                    maxLength={6}
+                    value={verificationCode}
+                    onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="123456"
+                    required
+                    autoFocus
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      letterSpacing: '0.25em',
+                      fontFamily: 'monospace',
+                      fontSize: '16px',
+                      textAlign: 'center',
+                      borderRadius: '8px',
+                      border: '1px solid var(--line)',
+                      background: 'var(--page)',
+                      color: 'var(--ink)',
+                    }}
+                  />
+                  <p style={{ margin: '6px 0 0', fontSize: '11px', color: 'var(--muted)' }}>
+                    Verification emails are valid for 24 hours. Check your spam folder if you do not see it.
+                  </p>
+                </div>
+
+                <div className="dialog-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setView('login');
+                      setError(null);
+                    }}
+                  >
+                    Back to Sign In
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleResendVerification(verificationEmail)}
+                    disabled={resendLoading || cooldown > 0}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <RefreshCw size={14} className={resendLoading ? 'animate-spin' : ''} />
+                    {cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend verification email'}
+                  </button>
+
+                  <button
+                    className="report-from-details"
+                    type="submit"
+                    disabled={loading || verificationCode.length < 6}
+                  >
+                    {loading ? 'Verifying...' : 'Verify Code'}
+                  </button>
+                </div>
+              </form>
             </div>
           ) : view === 'forgot_password' ? (
             /* FORGOT PASSWORD FORM */
@@ -267,7 +526,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       }}
                     >
                       <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--amber)', display: 'block', marginBottom: '4px' }}>
-                        🔗 Authorized Test Link (Development &amp; Verification):
+                        🔗 Authorized Reset Link (Development &amp; Verification):
                       </span>
                       <a
                         href={testResetUrl}
@@ -362,7 +621,48 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     fontSize: '11px',
                   }}
                 >
-                  {error}
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                    <AlertCircle size={15} style={{ flexShrink: 0, marginTop: '1px' }} />
+                    <div style={{ flex: 1 }}>
+                      <div>{error}</div>
+                      {isUnverifiedNotice && (
+                        <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="primary"
+                            onClick={() => {
+                              setView('verify_pending');
+                              setError(null);
+                            }}
+                            style={{
+                              padding: '5px 12px',
+                              borderRadius: '6px',
+                              fontSize: '11px',
+                              fontWeight: 600,
+                            }}
+                          >
+                            Enter 6-digit code or link →
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleResendVerification(email)}
+                            disabled={resendLoading || cooldown > 0}
+                            style={{
+                              padding: '5px 10px',
+                              borderRadius: '6px',
+                              fontSize: '11px',
+                              background: 'var(--surface)',
+                              border: '1px solid var(--line)',
+                              color: 'var(--ink)',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend verification email'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -416,7 +716,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
               <div style={{ marginBottom: '6px' }}>
                 <label htmlFor="auth-password" style={{ display: 'block', fontSize: '11px', color: 'var(--muted)', marginBottom: '5px', fontWeight: 600 }}>
-                  Password
+                  Password {view === 'register' && <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(minimum 8 characters)</span>}
                 </label>
                 <div style={{ position: 'relative' }}>
                   <input
@@ -426,6 +726,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
                     required
+                    minLength={view === 'register' ? 8 : undefined}
                     style={{
                       width: '100%',
                       padding: '10px 36px 10px 11px',
@@ -497,11 +798,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 >
                   {view === 'register' ? 'Already have an account? Sign in' : 'Create new account'}
                 </button>
-                {view === 'login' && (
-                  <button type="button" onClick={switchToDemo} disabled={loading}>
-                    Demo Account (Kusuma)
-                  </button>
-                )}
                 <button className="report-from-details" type="submit" disabled={loading}>
                   {loading ? 'Please wait...' : view === 'register' ? 'Register' : 'Sign in'}
                 </button>

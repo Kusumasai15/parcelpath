@@ -3,7 +3,7 @@
     {
       "id": "user_kusuma_default",
       "email": "saddikutikusumasai@gmail.com",
-      "passwordHash": "60b6d0940eecb47bbf41be3db9f9c9392e52ef1b45ba079574d36075d4166008",
+      "passwordHash": "scrypt:cb9149a2a846bf770a2f24fc6090c4ed:ac5505e3c65131aabc5c6368c218f1e52ea0e147ae56b6e9815e7cd566234178d7200d0e025a47c5d011751ec53f83689dcba6dce1f4f24269f7bc5a0588b613",
       "name": "Kusuma",
       "avatarInitial": "K",
       "backupRecipient": "Ravi · Security desk",
@@ -14,6 +14,23 @@
       },
       "role": "user",
       "createdAt": "2026-11-02T07:03:17.188Z"
+    },
+    {
+      "id": "user_bd9f67e23efc186b",
+      "email": "e2e_verify_1793710328593@test.com",
+      "passwordHash": "scrypt:057a91978a3062e6f43bea0a3960e4fa:0468d8ea90544174935c16f23dc2ac8ba855ee84e4f939f77a82def234d6a885ad6b2b90874ed506a940d39618f14b273326e38d4016b1dcc193e0b502133d15",
+      "name": "E2E User",
+      "avatarInitial": "E",
+      "backupRecipient": "",
+      "deliveryInstructions": "",
+      "notifications": {
+        "statusUpdates": true,
+        "arrivalReminders": true
+      },
+      "role": "user",
+      "emailVerified": true,
+      "createdAt": "2026-11-03T12:52:08.827Z",
+      "lastVerificationSentAt": 1793710328828
     }
   ],
   "shipments": [
@@ -221,12 +238,109 @@
     }
   ],
   "sessions": {
-    "demo_session_token_kusuma": "user_kusuma_default"
+    "sess_c0d40ac0e39d6889e034b5230a3050b8522bb02e91a0dfc4": {
+      "userId": "user_bd9f67e23efc186b",
+      "createdAt": 1793710328951,
+      "lastVerifiedAt": 1793710328951
+    },
+    "sess_c857b2df7ad8eae9dd753c85d9ff4dfde07a838f3141c34f": {
+      "userId": "user_bd9f67e23efc186b",
+      "createdAt": 1793710329119,
+      "lastVerifiedAt": 1793710329119
+    }
   },
   "emailIntegrations": {
     "user_kusuma_default": {
       "status": "disconnected",
       "message": "Connect your Gmail account to automatically scan for order confirmation emails and extract product photos."
     }
-  }
+  },
+  "resetTokens": [
+    {
+      "token": "31ee33b648bb109ce47edfce0adf9f1acb75de6380b567b8e8368a6f2594967d",
+      "userId": "user_kusuma_default",
+      "email": "saddikutikusumasai@gmail.com",
+      "expiresAt": 1793709045053,
+      "used": true,
+      "createdAt": "2026-11-03T11:30:45.053Z"
+    },
+    {
+      "token": "9d27b1587563a07f93c7ca8d55857e4b62c0b219ccb36a2fd90c15db61267cf0",
+      "userId": "user_kusuma_default",
+      "email": "saddikutikusumasai@gmail.com",
+      "expiresAt": 1793709080945,
+      "used": true,
+      "createdAt": "2026-11-03T11:31:20.945Z"
+    }
+  ],
+  "verificationCodes": {},
+  "deletedUserIds": [
+    "user_f6f203c3f3a42dbe",
+    "user_cf9b8580aa272016",
+    "user_5d018fa6af7d7fb5",
+    "user_79fd6e457b6e660c",
+    "user_bcc6b9167a09c823",
+    "user_0884d52c4ea29c09",
+    "user_7e220f072d4b19b3",
+    "user_a2b21c4c41313689",
+    "user_6dfa02a25cecd23a",
+    "user_d625a6da88c0fa73",
+    "user_b48769631b82eff8",
+    "user_9d791bcb3000175a",
+    "user_cd081fff77def33b",
+    "user_d21a9f9bb71aa314",
+    "user_5f928c188712f426",
+    "user_a7ef3623402c3056",
+    "user_0a50d351e50f87bd",
+    "user_6a9913cfe068299d",
+    "user_f0adbed3a8abb023",
+    "user_0d715483d8504f41"
+  ],
+  "deletedEmails": [
+    "test_reset_1793705379169@example.com",
+    "test_change_1793705379497@example.com",
+    "test_delete_1793705379698@example.com",
+    "test_reset_1793705430227@example.com",
+    "test_change_1793705430601@example.com",
+    "test_delete_1793705430816@example.com",
+    "test_reset_1793710276175@example.com",
+    "test_change_1793710276528@example.com",
+    "test_delete_1793710276742@example.com",
+    "test_verif_1793710276849@example.com",
+    "persistence_user_1793710276959@example.com",
+    "test_reset_1793710305004@example.com",
+    "test_change_1793710305355@example.com",
+    "test_delete_1793710305567@example.com",
+    "test_verif_1793710305673@example.com",
+    "persistence_user_1793710305778@example.com"
+  ],
+  "verificationTokens": [
+    {
+      "token": "d8f35d029e5fe7df3e2e196d6c0409e43f6fbac8f9944a0ec54acc0309c16325",
+      "code": "951130",
+      "userId": "user_cd081fff77def33b",
+      "email": "test_verif_1793710276849@example.com",
+      "expiresAt": 1793796676956,
+      "used": true,
+      "createdAt": "2026-11-03T12:51:16.956Z"
+    },
+    {
+      "token": "48221284c6d8e24c30768b731531417804b95b87ec4caafa8983c76dcf1e448a",
+      "code": "115893",
+      "userId": "user_f0adbed3a8abb023",
+      "email": "test_verif_1793710305673@example.com",
+      "expiresAt": 1793796705776,
+      "used": true,
+      "createdAt": "2026-11-03T12:51:45.776Z"
+    },
+    {
+      "token": "39ac5336a8c3da09034e7c4167f740522a0c30f5bad2c9a5ba429a84c66237cc",
+      "code": "246159",
+      "userId": "user_bd9f67e23efc186b",
+      "email": "e2e_verify_1793710328593@test.com",
+      "expiresAt": 1793796728828,
+      "used": true,
+      "createdAt": "2026-11-03T12:52:08.828Z"
+    }
+  ]
 }

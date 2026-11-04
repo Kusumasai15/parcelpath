@@ -1,4 +1,5 @@
-import { PasswordSettings } from './components/PasswordSettings';
+import { AccountSecurityCard } from './components/AccountSecurityCard';
+import { ResetPasswordModal } from './components/ResetPasswordModal';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -93,8 +94,56 @@ export default function App() {
   const [preselectedIssueShipment, setPreselectedIssueShipment] = useState<Shipment | null>(null);
   const [isEmailConnectOpen, setIsEmailConnectOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [authInitialView, setAuthInitialView] = useState<'login' | 'register' | 'forgot_password'>('login');
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
   const [isNotifHelpOpen, setIsNotifHelpOpen] = useState(false);
+  const [isResetPasswordOpen, setIsResetPasswordOpen] = useState(false);
+  const [resetPasswordToken, setResetPasswordToken] = useState<string | null>(null);
+
+  // Automatically detect reset_token or verify_token in URL query parameters
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const resetTok = params.get('reset_token');
+      if (resetTok) {
+        setResetPasswordToken(resetTok);
+        setIsResetPasswordOpen(true);
+      }
+
+      const verifyTok = params.get('verify_token');
+      if (verifyTok) {
+        fetch('/api/auth/verify-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: verifyTok }),
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.success && data.token && data.user) {
+              setSessionToken(data.token);
+              setCurrentUser(data.user);
+              try {
+                localStorage.setItem('parcelpath-session-token', data.token);
+              } catch {}
+              setSettingsNotice('Email verified successfully! Welcome to ParcelPath.');
+              setTimeout(() => setSettingsNotice(null), 5000);
+            } else {
+              setSettingsNotice(data.error || 'Email verification link is invalid or expired.');
+              setTimeout(() => setSettingsNotice(null), 5000);
+            }
+          })
+          .catch(() => {
+            setSettingsNotice('Could not verify email. Please try again.');
+            setTimeout(() => setSettingsNotice(null), 5000);
+          })
+          .finally(() => {
+            try {
+              window.history.replaceState({}, document.title, window.location.pathname);
+            } catch {}
+          });
+      }
+    }
+  }, []);
 
   // Tickets state
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
@@ -592,6 +641,27 @@ export default function App() {
     }
   };
 
+  // Reset Password Success Handler
+  const handleResetPasswordSuccess = (_email: string) => {
+    setIsResetPasswordOpen(false);
+    setResetPasswordToken(null);
+    if (typeof window !== 'undefined') {
+      try {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch {}
+    }
+    activeSession.current = null;
+    try { localStorage.removeItem('parcelpath-session-token'); } catch {}
+    setSessionToken(null);
+    setCurrentUser(null);
+    setShipments([]);
+    setTickets([]);
+    setAlerts([]);
+    setSettingsNotice('Password successfully reset. Please sign in with your new password.');
+    setTimeout(() => setSettingsNotice(null), 5000);
+    setIsAuthOpen(true);
+  };
+
   // Delete Account
   const handleDeleteAccount = async () => {
     if (
@@ -602,21 +672,26 @@ export default function App() {
       return;
     }
     try {
-      await fetch('/api/auth/account', {
+      const res = await fetch('/api/auth/account', {
         method: 'DELETE',
         headers: {
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
       });
-      localStorage.removeItem('parcelpath-session-token');
-      setSessionToken(null);
-      setCurrentUser(null);
-      setShipments([]);
-      setTickets([]);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data.needsVerification) {
+          setSettingsNotice('Recent session verification required to delete your account.');
+          setTimeout(() => setSettingsNotice(null), 4000);
+          return;
+        }
+        throw new Error(data.error || 'Failed to delete account.');
+      }
+      await handleLogout();
       setSettingsNotice('Account and all associated records deleted.');
-      setActivePage('dashboard');
     } catch (e) {
       console.error(e);
+      setSettingsNotice('Failed to delete account. Please re-authenticate.');
     }
   };
 
@@ -2025,10 +2100,24 @@ export default function App() {
                   </form>
                 </article>
 
-                <PasswordSettings token={currentUser ? sessionToken : null} onSignIn={() => setIsAuthOpen(true)} onChanged={() => {
-                  void handleLogout();
-                  setSettingsNotice('Password changed. Sign in again with your new password.');
-                }} />
+                <AccountSecurityCard
+                  sessionToken={sessionToken}
+                  currentUser={currentUser}
+                  onAccountDeleted={handleLogout}
+                  onRequireReauth={() => {
+                    handleLogout();
+                    setAuthInitialView('login');
+                    setIsAuthOpen(true);
+                  }}
+                  onOpenAuth={(view) => {
+                    setAuthInitialView(view || 'login');
+                    setIsAuthOpen(true);
+                  }}
+                  onNotice={(msg) => {
+                    setSettingsNotice(msg);
+                    setTimeout(() => setSettingsNotice(null), 4000);
+                  }}
+                />
 
                 <article className="settings-card">
                   <h2>Appearance</h2>
@@ -2099,16 +2188,6 @@ export default function App() {
                       </button>
                     </div>
                   )}
-
-                  <h2 style={{ marginTop: '20px', color: '#fc8181' }}>Delete Account</h2>
-                  <p className="support-copy">
-                    Permanently delete your profile, saved tracking numbers, and support history.
-                  </p>
-                  <div className="simple-actions" style={{ marginTop: '8px' }}>
-                    <button className="danger" type="button" onClick={handleDeleteAccount}>
-                      Delete account &amp; all data
-                    </button>
-                  </div>
                 </article>
               </div>
             </section>
@@ -2239,6 +2318,7 @@ export default function App() {
         currentUser={currentUser}
         onLoginSuccess={handleLoginSuccess}
         onLogout={handleLogout}
+        initialView={authInitialView}
       />
 
       <NotificationGuideModal
@@ -2247,6 +2327,26 @@ export default function App() {
         browserStatus={browserNotificationStatus}
         onSendTestAlert={handleSendTestAlert}
         onRequestPermission={handleRequestBrowserNotifications}
+      />
+
+      <ResetPasswordModal
+        isOpen={isResetPasswordOpen}
+        token={resetPasswordToken}
+        onClose={() => {
+          setIsResetPasswordOpen(false);
+          setResetPasswordToken(null);
+          if (typeof window !== 'undefined') {
+            try {
+              window.history.replaceState({}, document.title, window.location.pathname);
+            } catch {}
+          }
+        }}
+        onSuccess={handleResetPasswordSuccess}
+        onRequestNewLink={() => {
+          setIsResetPasswordOpen(false);
+          setResetPasswordToken(null);
+          setIsAuthOpen(true);
+        }}
       />
     </div>
   );
