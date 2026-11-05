@@ -15,6 +15,7 @@ import {
 } from './utils/courier';
 import { AddDeliveryModal } from './components/AddDeliveryModal';
 import { OrderDetailsModal } from './components/OrderDetailsModal';
+import { DeliveryCalendarPopup } from './components/DeliveryCalendarPopup';
 import { ReportIssueModal } from './components/ReportIssueModal';
 import { CustomerCareForm } from './components/CustomerCareForm';
 import { FeedbackModal } from './components/FeedbackModal';
@@ -23,6 +24,7 @@ import { AuthModal } from './components/AuthModal';
 import { NotificationGuideModal } from './components/NotificationGuideModal';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { getCategoryLabel } from './utils/support';
+import { getIstDateStr, formatTodayDeliveryEta } from './utils/istDate';
 
 const getLocalDateStr = (d = new Date()) => {
   const year = d.getFullYear();
@@ -89,6 +91,7 @@ export default function App() {
   // Modals state
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [isCalendarPopupOpen, setIsCalendarPopupOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [preselectedIssueShipment, setPreselectedIssueShipment] = useState<Shipment | null>(null);
   const [isEmailConnectOpen, setIsEmailConnectOpen] = useState(false);
@@ -315,11 +318,6 @@ export default function App() {
     fetchSupportConfig();
   }, [fetchUserProfile, fetchShipments, fetchAlerts, fetchTickets, fetchSupportConfig]);
 
-  // Stats computation
-  const stats = useMemo(() => {
-    return calculateSummaryStats(shipments);
-  }, [shipments]);
-
   // Active shipments (excludes delivered)
   const activeShipments = useMemo(() => {
     return shipments.filter((s) => s.status !== 'Delivered');
@@ -330,32 +328,46 @@ export default function App() {
     return shipments.filter((s) => s.status === 'Delivered');
   }, [shipments]);
 
-  // Shipments arriving today
+  // Shipments arriving today (synchronized with IST calendar date)
   const todayShipments = useMemo(() => {
-    const todayStr = getLocalDateStr();
+    const istToday = getIstDateStr();
     return shipments.filter(
       (s) =>
         s.status !== 'Delivered' &&
-        (s.estimatedDate === todayStr ||
-          s.status === 'Out for delivery' ||
-          (s.eta && s.eta.toLowerCase().includes('today')))
+        !s.isArchived &&
+        s.estimatedDate === istToday
     );
   }, [shipments]);
 
+  // Stats computation - synchronized with IST calendar
+  const stats = useMemo(() => {
+    const base = calculateSummaryStats(shipments);
+    return {
+      ...base,
+      todayCount: todayShipments.length,
+    };
+  }, [shipments, todayShipments]);
+
   // Filtered shipments for Dashboard
   const dashboardShipments = useMemo(() => {
+    let list: Shipment[] = [];
     if (selectedStatFilter === 'active') {
-      return activeShipments;
-    }
-    if (selectedStatFilter === 'today') {
+      list = activeShipments;
+    } else if (selectedStatFilter === 'today') {
       return todayShipments;
-    }
-    if (selectedStatFilter === 'attention') {
+    } else if (selectedStatFilter === 'attention') {
       return shipments.filter(
         (s) => s.status === 'Delivery attempted' || s.status === 'Delayed' || s.status === 'Exception'
       );
+    } else {
+      list = activeShipments;
     }
-    return activeShipments;
+
+    // At the top of the dashboard's existing delivery list, show today's parcels first
+    const istToday = getIstDateStr();
+    const todayList = list.filter((s) => s.estimatedDate === istToday);
+    const otherList = list.filter((s) => s.estimatedDate !== istToday);
+    return [...todayList, ...otherList];
   }, [activeShipments, todayShipments, shipments, selectedStatFilter]);
 
   // Filtered shipments for All Deliveries list
@@ -993,6 +1005,17 @@ export default function App() {
               <button
                 className="drawer-link"
                 type="button"
+                data-page="calendar"
+                onClick={() => {
+                  setIsCalendarPopupOpen(true);
+                  setMenuOpen(false);
+                }}
+              >
+                Calendar
+              </button>
+              <button
+                className="drawer-link"
+                type="button"
                 data-page="preferences"
                 aria-current={activePage === 'preferences' ? 'page' : undefined}
                 onClick={() => navigateTo('preferences')}
@@ -1195,6 +1218,10 @@ export default function App() {
                       const progress = getShipmentProgress(shipment.status);
                       const isJustAdded = shipment.id === justAddedShipmentId;
 
+                      const istTodayStr = getIstDateStr();
+                      const isToday = shipment.estimatedDate === istTodayStr;
+                      const todayDeliveryText = formatTodayDeliveryEta(shipment.timeWindow, shipment.eta);
+
                       return (
                         <article
                           key={shipment.id}
@@ -1220,6 +1247,23 @@ export default function App() {
                             <span>
                               <span className="product">
                                 {shipment.item}
+                                {isToday && (
+                                  <span
+                                    style={{
+                                      marginLeft: '6px',
+                                      fontSize: '9px',
+                                      fontWeight: 700,
+                                      padding: '2px 6px',
+                                      borderRadius: '4px',
+                                      backgroundColor: 'color-mix(in srgb, var(--coral) 18%, transparent)',
+                                      color: 'var(--coral)',
+                                      letterSpacing: '0.04em',
+                                      textTransform: 'uppercase',
+                                    }}
+                                  >
+                                    Today
+                                  </span>
+                                )}
                                 {shipment.customLabel && (
                                   <span className="custom-label-badge">
                                     🏷 {shipment.customLabel}
@@ -1248,10 +1292,12 @@ export default function App() {
                             </span>
                             <span className="time">
                               <span className="eta">
-                                {shipment.timeWindow || shipment.eta || 'Time not available'}
+                                {isToday ? todayDeliveryText : shipment.timeWindow || shipment.eta || 'Time not available'}
                               </span>
                               <span className="meta">
-                                {shipment.timeWindow
+                                {isToday
+                                  ? (shipment.timeWindow ? 'Courier window (IST)' : 'Expected today · Time not provided')
+                                  : shipment.timeWindow
                                   ? 'Estimated window'
                                   : isAlert
                                   ? 'A handoff may be needed'
@@ -2278,7 +2324,21 @@ export default function App() {
         onDeleteShipment={handleDeleteShipment}
         onRefreshShipment={handleRefreshShipment}
         onUpdateLabel={handleUpdateLabel}
+        onUpdateShipment={(updated) => {
+          setShipments((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+          setActiveDetailShipment(updated);
+        }}
         sessionToken={sessionToken}
+      />
+
+      <DeliveryCalendarPopup
+        isOpen={isCalendarPopupOpen}
+        onClose={() => setIsCalendarPopupOpen(false)}
+        shipments={shipments}
+        onOpenDetails={(parcel) => {
+          setActiveDetailShipment(parcel);
+          setIsDetailsOpen(true);
+        }}
       />
 
       <ReportIssueModal

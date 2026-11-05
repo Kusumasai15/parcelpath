@@ -27,6 +27,18 @@ export interface Shipment {
   lastUpdated?: string;      // Human label e.g. "Updated 5 minutes ago"
   lastRefreshedAt: string;   // ISO timestamp of last successful tracking refresh
   courierEventTime?: string; // Carrier's own event timestamp e.g. "Today, 10:42 AM"
+  notificationPreferences?: {
+    outForDelivery: boolean;
+    deliveryAttempted: boolean;
+    delivered: boolean;
+  };
+  alertHistory?: string[]; // tracked event signatures to guarantee 1 alert per distinct courier event
+  liveCoordinates?: {
+    hasRealGps?: boolean;
+    latitude: number;
+    longitude: number;
+    updatedAt: string; // IST update timestamp from carrier
+  };
   createdAt: string;
 }
 
