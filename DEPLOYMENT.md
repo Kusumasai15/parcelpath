@@ -56,18 +56,17 @@ Under **Settings → Environment Variables** in the Vercel dashboard, add the fo
 
 | Variable Name | Required? | Description / Example |
 | :--- | :--- | :--- |
+| `DATABASE_URL` | **Yes (for Neon)** | Neon PostgreSQL connection URI: `postgresql://user:password@ep-xyz.region.aws.neon.tech/neondb?sslmode=require`. Used for all persistent account, parcel, ticket, and session data. |
 | `NODE_ENV` | Yes | `production` |
-| `APP_URL` | Yes | Your production Vercel domain (e.g. `https://parcelpath.vercel.app`) |
+| `APP_URL` | Yes | Your production Vercel domain (e.g. `https://parcelpath-brown.vercel.app`) |
+| `GOOGLE_CLIENT_ID` | Optional | Google Cloud OAuth Client ID (for Gmail order confirmation photo matching). |
+| `GOOGLE_CLIENT_SECRET` | Optional | Google Cloud OAuth Client Secret. |
 | `SUPPORT_EMAIL` | Optional | Official support email shown in Customer Care (e.g. `care@parcelpath.in`). If omitted, app displays honest unavailable state for direct calling. |
 | `SUPPORT_PHONE` | Optional | Official support hotline / WhatsApp number (e.g. `+91 98765 43210`). |
 | `SUPPORT_WHATSAPP` | Optional | Dedicated official WhatsApp contact number. |
 | `SUPPORT_HOURS` | Optional | Working hours (default: `Mon–Sat: 9:00 AM – 7:00 PM IST`). |
-| `GOOGLE_CLIENT_ID` | Optional | Google Cloud OAuth Client ID (for Gmail order confirmation photo matching). |
-| `GOOGLE_CLIENT_SECRET` | Optional | Google Cloud OAuth Client Secret. |
 | `DELHIVERY_API_KEY` | Optional | Live tracking token for Delhivery webhooks. |
 | `BLUEDART_LICENSE_KEY` | Optional | Enterprise tracking credentials for Blue Dart. |
-| `BLOB_READ_WRITE_TOKEN` | Optional | Vercel Blob token for external persistent attachment storage. |
-| `DATABASE_URL` | Optional | PostgreSQL connection string for permanent multi-user database storage. |
 | `CRON_SECRET` | Optional | Secret key to protect `/api/cron/refresh-tracking` from unauthorized external requests. |
 
 ---
@@ -75,33 +74,36 @@ Under **Settings → Environment Variables** in the Vercel dashboard, add the fo
 ### Step 2.4: Deploy & Verify
 
 1. Click **Deploy**. Vercel will run `npm run build` and provision serverless API routes.
-2. Once the build completes, visit your production URL (e.g., `https://parcelpath.vercel.app`).
-3. Verify:
-   - Navigation between **Dashboard**, **Deliveries** (List, Calendar, History), **Customer Care**, and **Issues & Feedback**.
-   - Customer Care form: Fill in contact details, select an affected parcel or manual tracking ID, attach a test screenshot, and submit.
-   - Verify ticket reference code (e.g. `TKT-xxxx-2026`) appears in confirmation.
-   - Switch to **Issues & Feedback** to see the new ticket listed with contact details, category label, and attachment badge.
+2. Once the build completes, visit your production URL (e.g., `https://<your-project>.vercel.app`).
+3. Verify database health: Visit `https://<your-project>.vercel.app/api/health/db` — it executes a live `SELECT 1` query on Neon PostgreSQL and returns `{ "status": "ok", "database": "neon_postgres", "healthy": true }`.
+4. Verify account & recovery:
+   - Register a new account. You will receive a strong 16-character recovery code (e.g., `H7KR-9M2P-4WX8-T5YQ`) to save.
+   - Save a parcel.
+   - Sign out, then sign back in to confirm persistent storage.
+   - In Settings, test changing your password (direct two-field form) or generating a replacement recovery code.
+   - Test "Forgot password?" using your account email and recovery code.
 
 ---
 
 ## 3. External Service URLs & Authorizations
 
-When configuring external integrations for your Vercel domain:
+### 3.1 Google Cloud Console (Gmail Photo Matching OAuth)
 
-1. **Firebase Console (Authorized Domains for Authentication & Storage):**
-   - Go to [Firebase Console](https://console.firebase.google.com/) → Your Project → **Authentication** → **Settings** → **Authorized domains**.
-   - Click **Add domain** and enter your Vercel deployment domain:
-     - `<your-project>.vercel.app`
-     - Any custom domain (e.g., `parcelpath.in` or `www.parcelpath.in`)
-   - *Why this is needed:* Firebase Auth rejects authentication tokens and popup redirects originating from unrecognized hostnames.
-
-2. **Google Cloud Console (OAuth Credentials):**
-   - Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials).
-   - Under your OAuth 2.0 Client ID:
-     - **Authorized JavaScript Origins:**
-       `https://<your-project>.vercel.app`
-     - **Authorized Redirect URIs:**
-       `https://<your-project>.vercel.app/api/auth/google/callback`
+In [Google Cloud Console](https://console.cloud.google.com/apis/credentials):
+1. Enable the **Gmail API** under APIs & Services.
+2. Under **Credentials → OAuth 2.0 Client IDs → Web application**:
+   - **Authorized JavaScript Origins:**
+     - `https://<your-project>.vercel.app`
+     - `http://localhost:3000` (for local development)
+   - **Authorized Redirect URIs (EXACT CALLBACK URL):**
+     - `https://<your-project>.vercel.app/api/auth/google/callback`
+     - `http://localhost:3000/api/auth/google/callback`
+3. Add scopes:
+   - `https://www.googleapis.com/auth/gmail.readonly`
+   - `https://www.googleapis.com/auth/userinfo.email`
+4. Copy the Client ID and Client Secret into your Vercel Environment Variables:
+   - `GOOGLE_CLIENT_ID`
+   - `GOOGLE_CLIENT_SECRET`
 
 3. **Courier Webhook Endpoints:**
    - In your carrier/aggregator developer portal (Delhivery, Blue Dart, Shiprocket, or 17TRACK):

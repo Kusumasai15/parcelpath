@@ -2,10 +2,11 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { db, User, Shipment, TrackingEvent } from './src/server/db.js';
-import { detectCourier, isStoreOrderId, SUPPORTED_COURIERS, formatHonestEta } from './src/utils/courier.js';
-import { isShipmentRequiredForCategory, getCategoryLabel, validateAttachment } from './src/utils/support.js';
-import { emailService } from './src/server/email.js';
+import { db, User, Shipment, TrackingEvent } from './src/server/db.ts';
+import { neonPostgres } from './src/server/postgres.ts';
+import { detectCourier, isStoreOrderId, SUPPORTED_COURIERS, formatHonestEta } from './src/utils/courier.ts';
+import { isShipmentRequiredForCategory, getCategoryLabel, validateAttachment } from './src/utils/support.ts';
+import { emailService } from './src/server/email.ts';
 
 dotenv.config();
 
@@ -13,7 +14,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = process.env.NODE_ENV === 'production' && process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -25,7 +26,9 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
     req.url.startsWith('/notifications') ||
     req.url.startsWith('/tickets') ||
     req.url.startsWith('/config') ||
-    req.url.startsWith('/couriers')
+    req.url.startsWith('/couriers') ||
+    req.url.startsWith('/health') ||
+    req.url.startsWith('/integrations')
   )) {
     req.url = '/api' + req.url;
   }
@@ -65,8 +68,14 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
   return res.status(401).json({ error: 'Authentication required. Please sign in.' });
 }
 
+// --- Health Check with Real Neon Database Query ---
+app.get('/api/health/db', async (_req: Request, res: Response) => {
+  const health = await neonPostgres.runHealthQuery();
+  return res.status(health.healthy ? 200 : 503).json(health);
+});
+
 // --- Auth Routes ---
-app.post('/api/auth/register', async (req: Request, res: Response) => {
+app.post('/api/auth/register', (req: Request, res: Response) => {
   const { name, email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required.' });
@@ -80,150 +89,31 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
   const existing = db.getUserByEmail(normEmail);
 
   if (existing) {
-    if (existing.emailVerified !== false) {
-      return res.status(409).json({
-        error: 'An account with this email already exists. Please sign in or reset your password.',
-        code: 'ACCOUNT_EXISTS',
-        action: 'sign_in',
-      });
-    }
-
-    // Existing unverified account: resend verification with cooldown
-    const cooldownMs = 60 * 1000;
-    const elapsed = Date.now() - (existing.lastVerificationSentAt || 0);
-    if (elapsed < cooldownMs) {
-      const waitSec = Math.ceil((cooldownMs - elapsed) / 1000);
-      return res.status(429).json({
-        error: `A verification email was already sent recently. Please check your inbox or wait ${waitSec}s to resend.`,
-        code: 'VERIFICATION_COOLDOWN',
-        cooldownRemaining: waitSec,
-        email: existing.email,
-        requiresVerification: true,
-      });
-    }
-
-    const tokenData = db.createAccountVerificationToken(existing.id);
-    const emailResult = await emailService.sendAccountVerificationEmail(
-      existing.email,
-      existing.name,
-      tokenData.token,
-      tokenData.code
-    );
-
-    return res.status(200).json({
-      success: true,
-      requiresVerification: true,
-      email: existing.email,
-      deliveredViaProvider: emailResult.deliveredViaProvider,
-      verificationUrl: !emailResult.deliveredViaProvider ? emailResult.verificationUrl : undefined,
-      message: emailResult.deliveredViaProvider
-        ? 'A fresh verification email has been sent to your inbox.'
-        : 'Verification link generated. (External email provider unverified; verify using the link below).',
+    return res.status(409).json({
+      error: 'An account with this email already exists. Please sign in or use your recovery code.',
+      code: 'ACCOUNT_EXISTS',
+      action: 'sign_in',
     });
   }
 
-  const user = db.createUser(name || 'Parcel User', normEmail, password, false);
-  const tokenData = db.createAccountVerificationToken(user.id);
-  const emailResult = await emailService.sendAccountVerificationEmail(
-    user.email,
-    user.name,
-    tokenData.token,
-    tokenData.code
-  );
+  const user = db.createUser(name || 'Parcel User', normEmail, password, true);
+  const token = db.createSession(user.id);
 
   return res.status(201).json({
     success: true,
-    requiresVerification: true,
-    email: user.email,
-    deliveredViaProvider: emailResult.deliveredViaProvider,
-    verificationUrl: !emailResult.deliveredViaProvider ? emailResult.verificationUrl : undefined,
-    verificationCode: !emailResult.deliveredViaProvider ? tokenData.code : undefined,
-    message: emailResult.deliveredViaProvider
-      ? 'Account created! Please check your inbox to verify your email.'
-      : 'Account created! (External email provider unverified; verify using the code or link below).',
-  });
-});
-
-app.post('/api/auth/resend-verification', async (req: Request, res: Response) => {
-  const { email } = req.body;
-  if (!email || typeof email !== 'string' || !email.includes('@')) {
-    return res.status(400).json({ error: 'A valid email address is required.' });
-  }
-
-  const normEmail = email.trim().toLowerCase();
-  const user = db.getUserByEmail(normEmail);
-
-  if (!user) {
-    return res.json({
-      success: true,
-      message: 'If an unverified account exists for this email, a verification link has been sent.',
-    });
-  }
-
-  if (user.emailVerified !== false) {
-    return res.json({
-      success: true,
-      alreadyVerified: true,
-      message: 'Your account is already verified. You can sign in directly.',
-    });
-  }
-
-  const cooldownMs = 60 * 1000;
-  const elapsed = Date.now() - (user.lastVerificationSentAt || 0);
-  if (elapsed < cooldownMs) {
-    const waitSec = Math.ceil((cooldownMs - elapsed) / 1000);
-    return res.status(429).json({
-      error: `Please wait ${waitSec} seconds before requesting another verification email.`,
-      cooldownRemaining: waitSec,
-    });
-  }
-
-  const tokenData = db.createAccountVerificationToken(user.id);
-  const emailResult = await emailService.sendAccountVerificationEmail(
-    user.email,
-    user.name,
-    tokenData.token,
-    tokenData.code
-  );
-
-  return res.json({
-    success: true,
-    deliveredViaProvider: emailResult.deliveredViaProvider,
-    verificationUrl: !emailResult.deliveredViaProvider ? emailResult.verificationUrl : undefined,
-    verificationCode: !emailResult.deliveredViaProvider ? tokenData.code : undefined,
-    message: emailResult.deliveredViaProvider
-      ? 'Verification email has been sent. Please check your inbox.'
-      : 'Verification link & code generated (External email provider unverified; verify below).',
-  });
-});
-
-app.post('/api/auth/verify-email', (req: Request, res: Response) => {
-  const { token, code } = req.body;
-  const tokenOrCode = (token || code || '').trim();
-  if (!tokenOrCode) {
-    return res.status(400).json({ error: 'Verification token or code is required.' });
-  }
-
-  const result = db.verifyAccountEmail(tokenOrCode);
-  if (!result.success || !result.user) {
-    return res.status(400).json({ error: result.error || 'Invalid or expired verification token.' });
-  }
-
-  const sessionToken = db.createSession(result.user.id);
-  return res.json({
-    success: true,
-    message: 'Email successfully verified! Welcome to ParcelPath.',
-    token: sessionToken,
+    token,
     user: {
-      id: result.user.id,
-      email: result.user.email,
-      name: result.user.name,
-      avatarInitial: result.user.avatarInitial,
-      role: result.user.role,
-      notifications: result.user.notifications,
-      backupRecipient: result.user.backupRecipient,
-      deliveryInstructions: result.user.deliveryInstructions,
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      avatarInitial: user.avatarInitial,
+      role: user.role,
+      notifications: user.notifications,
+      backupRecipient: user.backupRecipient,
+      deliveryInstructions: user.deliveryInstructions,
     },
+    recoveryCode: user.recoveryCode,
+    message: 'Account created! Please store your recovery code safely.',
   });
 });
 
@@ -237,19 +127,7 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   const user = db.getUserByEmail(normEmail);
 
   if (!user || !db.verifyPassword(user, password)) {
-    return res.status(401).json({ error: 'Invalid email or password.' });
-  }
-
-  // Check email verification status
-  if (user.emailVerified === false) {
-    const tokenData = db.createAccountVerificationToken(user.id);
-    return res.status(403).json({
-      error: 'Your email address is not verified yet. Please check your inbox or verify using the code below.',
-      code: 'EMAIL_NOT_VERIFIED',
-      email: user.email,
-      verificationCode: tokenData.code,
-      verificationUrl: `${emailService.getBaseUrl()}/?verify_token=${encodeURIComponent(tokenData.token)}`,
-    });
+    return res.status(401).json({ error: 'Invalid username or password.' });
   }
 
   const token = db.createSession(user.id);
@@ -268,7 +146,81 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   });
 });
 
-// Note: Password recovery and recent-session-protected password change routes are defined below.
+// --- Recovery Code Flow (Replaces Email Password Reset) ---
+// Rate limit: 5 attempts per 15 minutes per IP + email
+const recoveryRateLimits = new Map<string, { count: number; firstAttempt: number }>();
+
+app.post('/api/auth/recover-with-code', (req: Request, res: Response) => {
+  const { email, recoveryCode, newPassword, confirmPassword } = req.body;
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+  const normEmail = (email || '').trim().toLowerCase();
+  const rateKey = `${clientIp}_${normEmail}`;
+  const now = Date.now();
+
+  const attempt = recoveryRateLimits.get(rateKey);
+  if (attempt) {
+    if (now - attempt.firstAttempt > 15 * 60 * 1000) {
+      recoveryRateLimits.delete(rateKey);
+    } else if (attempt.count >= 5) {
+      return res.status(429).json({
+        error: 'Too many failed recovery attempts. Please try again after 15 minutes.',
+      });
+    }
+  }
+
+  if (!email || !recoveryCode || !newPassword) {
+    return res.status(400).json({ error: 'Account email, recovery code, and new password are required.' });
+  }
+
+  if (newPassword.length < 8) {
+    return res.status(400).json({ error: 'New password must be at least 8 characters long.' });
+  }
+
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ error: 'Passwords do not match.' });
+  }
+
+  const result = db.recoverWithCode(normEmail, recoveryCode, newPassword);
+  if (!result.success || !result.user || !result.token) {
+    const cur = recoveryRateLimits.get(rateKey) || { count: 0, firstAttempt: now };
+    cur.count += 1;
+    recoveryRateLimits.set(rateKey, cur);
+    return res.status(400).json({ error: result.error || 'Invalid email or recovery code.' });
+  }
+
+  // Clear rate limit on successful recovery
+  recoveryRateLimits.delete(rateKey);
+
+  return res.json({
+    success: true,
+    message: 'Password reset successfully with recovery code. Previous sessions have been revoked.',
+    token: result.token,
+    user: {
+      id: result.user.id,
+      email: result.user.email,
+      name: result.user.name,
+      avatarInitial: result.user.avatarInitial,
+      role: result.user.role,
+      notifications: result.user.notifications,
+      backupRecipient: result.user.backupRecipient,
+      deliveryInstructions: result.user.deliveryInstructions,
+    },
+  });
+});
+
+app.post('/api/auth/recovery-code/regenerate', authMiddleware, (req: Request, res: Response) => {
+  const user = req.user!;
+  const result = db.regenerateRecoveryCode(user.id);
+  if (!result) {
+    return res.status(404).json({ error: 'User account not found.' });
+  }
+
+  return res.json({
+    success: true,
+    recoveryCode: result.recoveryCode,
+    message: 'New recovery code generated. Store it in a safe place. Previous codes are invalid.',
+  });
+});
 
 app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
@@ -310,117 +262,10 @@ app.post('/api/auth/logout', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
-// --- Password Recovery (Forgot Password & Reset) ---
-app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
-  const { email } = req.body;
-  if (!email || typeof email !== 'string' || !email.includes('@')) {
-    return res.status(400).json({ error: 'A valid email address is required.' });
-  }
-
-  // Create expiring, single-use token if user exists
-  const tokenData = db.createPasswordResetToken(email);
-  if (tokenData) {
-    await emailService.sendPasswordResetEmail(tokenData.user.email, tokenData.user.name, tokenData.token);
-  }
-
-  // CRITICAL REQUIREMENT: Generic response that does not reveal whether the email is registered
-  return res.json({
-    success: true,
-    message: 'If an account is associated with this email, a password reset link has been dispatched.',
-  });
-});
-
-app.get('/api/auth/verify-reset-token', (req: Request, res: Response) => {
-  const token = req.query.token as string;
-  if (!token) {
-    return res.status(400).json({ valid: false, reason: 'Token parameter is required.' });
-  }
-
-  const result = db.verifyPasswordResetToken(token);
-  return res.json(result);
-});
-
-app.post('/api/auth/reset-password', (req: Request, res: Response) => {
-  const { token, newPassword, confirmPassword } = req.body;
-
-  if (!token || typeof token !== 'string') {
-    return res.status(400).json({ error: 'Reset token is required.' });
-  }
-
-  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
-    return res.status(400).json({ error: 'New password must be at least 8 characters long.' });
-  }
-
-  if (newPassword !== confirmPassword) {
-    return res.status(400).json({ error: 'Passwords do not match.' });
-  }
-
-  const result = db.consumePasswordReset(token, newPassword);
-  if (!result.success) {
-    return res.status(400).json({ error: result.error });
-  }
-
-  return res.json({
-    success: true,
-    message: 'Password successfully reset. All existing sessions have been invalidated. Please sign in with your new password.',
-  });
-});
-
-// --- Session Verification & In-Settings Password Change ---
-app.get('/api/auth/session-status', authMiddleware, (req: Request, res: Response) => {
-  const isRecent = db.isSessionRecent(req.sessionToken!);
-  return res.json({
-    isRecent,
-    email: req.user!.email,
-  });
-});
-
-app.post('/api/auth/request-verification', authMiddleware, async (req: Request, res: Response) => {
-  const user = req.user!;
-  const action = req.body.action === 'delete_account' ? 'delete_account' : 'change_password';
-
-  const { code, email } = db.createVerificationCode(user.id, action);
-  await emailService.sendVerificationCodeEmail(email, user.name, code, action);
-
-  return res.json({
-    success: true,
-    message: `A 6-digit security code has been sent to ${email}.`,
-  });
-});
-
-app.post('/api/auth/verify-session', authMiddleware, (req: Request, res: Response) => {
-  const user = req.user!;
-  const { code, password, action } = req.body;
-  const targetAction = action === 'delete_account' ? 'delete_account' : 'change_password';
-
-  let verified = false;
-
-  if (password && typeof password === 'string') {
-    verified = db.verifyPassword(user, password);
-  } else if (code && typeof code === 'string') {
-    verified = db.verifyCode(user.id, code, targetAction);
-  }
-
-  if (!verified) {
-    return res.status(400).json({ error: 'Invalid verification code or password.' });
-  }
-
-  db.refreshSessionVerification(req.sessionToken!);
-  return res.json({ success: true, verified: true });
-});
-
+// --- Simplified In-Settings Password Change (Uses active session, no re-prompting) ---
 const handlePasswordUpdate = (req: Request, res: Response) => {
   const user = req.user!;
   const token = req.sessionToken!;
-
-  // Require recent session verification
-  if (!db.isSessionRecent(token)) {
-    return res.status(403).json({
-      error: 'Recent authentication or email verification required before updating password.',
-      needsVerification: true,
-    });
-  }
-
   const { newPassword, confirmPassword } = req.body;
 
   if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
@@ -431,44 +276,23 @@ const handlePasswordUpdate = (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Passwords do not match.' });
   }
 
-  const result = db.updateUserPassword(user.id, newPassword);
+  const result = db.updateUserPassword(user.id, newPassword, token);
   if (!result.success) {
     return res.status(400).json({ error: result.error });
   }
 
   return res.json({
     success: true,
-    sessionsRevoked: true,
-    message: 'Password successfully updated. All sessions have been revoked. Please sign in with your new password.',
+    message: 'Password successfully updated. All other active sessions have been invalidated.',
   });
 };
 
 app.put('/api/auth/password', authMiddleware, handlePasswordUpdate);
 app.post('/api/auth/change-password', authMiddleware, handlePasswordUpdate);
 
-// --- Delete Account & All Data ---
+// --- Simplified Account Deletion (One confirmation, deletes user data & private attachments, allows fresh registration) ---
 app.delete('/api/auth/account', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
-  const token = req.sessionToken!;
-  const { code } = req.body || {};
-
-  if (code && typeof code === 'string' && code.trim().length === 6) {
-    const verified = db.verifyCode(user.id, code.trim(), 'delete_account');
-    if (verified) {
-      db.refreshSessionVerification(token);
-    } else {
-      return res.status(400).json({ error: 'Invalid or expired 6-digit security code.' });
-    }
-  }
-
-  // Verify recent session
-  if (!db.isSessionRecent(token)) {
-    return res.status(403).json({
-      error: 'Recent authentication or email verification required to delete your account.',
-      needsVerification: true,
-    });
-  }
-
   const result = db.deleteUserAccount(user.id);
   if (!result.success) {
     return res.status(400).json({ error: result.error || 'Failed to delete account.' });
@@ -478,13 +302,6 @@ app.delete('/api/auth/account', authMiddleware, (req: Request, res: Response) =>
     success: true,
     message: 'Your account, shipments, customer tickets, alerts, and sessions have been permanently deleted.',
     deleted: result.deletedCount,
-  });
-});
-
-// --- Test Inbox (for verification and test automation) ---
-app.get('/api/auth/test-inbox', (req: Request, res: Response) => {
-  return res.json({
-    messages: emailService.getTestInbox(),
   });
 });
 
@@ -572,7 +389,7 @@ app.post('/api/shipments', authMiddleware, (req: Request, res: Response) => {
     status: 'In transit',
     eta: honestEta.main,
     estimatedDate: twoDaysLater,
-    timeWindow: undefined, // Honest: exact window unavailable
+    timeWindow: undefined,
     location: 'Carrier origin hub (Today)',
     events: initialEvents,
     imageUrl: imageUrl?.trim() || undefined,
@@ -632,7 +449,7 @@ app.delete('/api/shipments/:id', authMiddleware, (req: Request, res: Response) =
 
   return res.json({
     success: true,
-    message: 'Shipment removed from your tracker. (This does not affect the retailer order or courier dispatch).',
+    message: 'Shipment removed from your tracker.',
   });
 });
 
@@ -643,7 +460,6 @@ app.post('/api/shipments/:id/refresh', authMiddleware, (req: Request, res: Respo
     return res.status(404).json({ error: 'Shipment not found.' });
   }
 
-  // Update lastRefreshedAt timestamp truthfully
   const updated = db.updateShipment(shipment.id, user.id, {
     lastRefreshedAt: new Date().toISOString(),
   });
@@ -651,7 +467,7 @@ app.post('/api/shipments/:id/refresh', authMiddleware, (req: Request, res: Respo
   return res.json({ shipment: updated, refreshed: true });
 });
 
-// Scheduled background tracking refresh (for Vercel Cron or external scheduler)
+// Scheduled background tracking refresh
 app.get('/api/cron/refresh-tracking', (req: Request, res: Response) => {
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = req.headers.authorization;
@@ -667,7 +483,6 @@ app.get('/api/cron/refresh-tracking', (req: Request, res: Response) => {
   });
 });
 
-// "I won't be home" / Rescheduling inquiry
 app.post('/api/shipments/:id/reschedule', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
   const shipment = db.getShipmentById(req.params.id, user.id);
@@ -685,7 +500,7 @@ app.post('/api/shipments/:id/reschedule', authMiddleware, (req: Request, res: Re
     courier: courierInfo.name,
     trackingNumber: shipment.trackingNumber,
     isDirectIntegrationAvailable: false,
-    message: `Direct doorstep rescheduling is determined by ${courierInfo.name}'s delivery policy. ParcelPath does not fabricate fake time slots. You can request a delivery reschedule or leave instructions via the carrier's official portal.`,
+    message: `Direct doorstep rescheduling is determined by ${courierInfo.name}'s delivery policy. You can request a delivery reschedule or leave instructions via the carrier's portal.`,
     officialPortalUrl: officialRescheduleUrl || courierInfo.trackingUrl(shipment.trackingNumber.replace(/^…/, '')),
     backupRecipientRecommendation: user.backupRecipient
       ? `Your saved backup recipient: ${user.backupRecipient}`
@@ -718,67 +533,196 @@ app.delete('/api/notifications', authMiddleware, (req: Request, res: Response) =
   return res.json({ success: true });
 });
 
-app.post('/api/notifications/test', authMiddleware, (req: Request, res: Response) => {
-  const user = req.user!;
-  const shipments = db.getShipmentsForUser(user.id);
-  const target = shipments[0];
-  const testAlert = db.addAlert({
-    userId: user.id,
-    shipmentId: target?.id || 'ship_test',
-    shipmentItem: target?.item || 'Wireless headphones',
-    trackingNumber: target?.trackingNumber || '…4821',
-    type: 'out_for_delivery',
-    title: `Out for delivery: ${target?.item || 'Wireless headphones'}`,
-    message: 'Delhivery courier is out for delivery. Estimated arrival: Today, 2:30–3:15 PM.',
-    read: false,
-  });
-  return res.json({ alert: testAlert });
-});
-
-// --- Email Integration ---
+// --- Gmail Integration & Verified Product Photo Matching ---
 app.get('/api/integrations/email', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
   const state = db.getEmailIntegration(user.id);
-  const isOauthConfigured = !!process.env.GOOGLE_CLIENT_ID;
+  const isOauthConfigured = !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 
   return res.json({
     ...state,
     oauthConfigured: isOauthConfigured,
-    setupGuide: !isOauthConfigured
-      ? 'To connect Gmail, configure GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env. We request narrow read-only access to search only order confirmation emails and extract product thumbnails.'
-      : undefined,
+    message: isOauthConfigured
+      ? (state.status === 'connected' ? `Connected: ${state.email || 'Gmail'}` : 'Gmail ready to connect.')
+      : 'Email photo matching is unavailable. You can still track your parcels.',
   });
 });
 
-app.post('/api/integrations/email/connect', authMiddleware, (req: Request, res: Response) => {
-  const user = req.user!;
-  const isOauthConfigured = !!process.env.GOOGLE_CLIENT_ID;
+app.get('/api/auth/google/url', authMiddleware, (req: Request, res: Response) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
-  if (!isOauthConfigured) {
+  if (!clientId || !clientSecret) {
     return res.status(400).json({
-      error: 'Google OAuth credentials not configured on server.',
-      instructions: 'Please add GOOGLE_CLIENT_ID to your environment variables to enable Gmail read-only order scanning.',
+      error: 'Email photo matching is unavailable. You can still track your parcels.',
     });
   }
 
-  db.setEmailIntegration(user.id, {
-    status: 'connected',
-    email: user.email,
-    connectedAt: new Date().toISOString(),
-    message: 'Gmail order scanning active. Product pictures will be matched using retailer order numbers.',
-  });
+  const baseUrl = emailService.getBaseUrl();
+  const callbackUrl = `${baseUrl}/api/auth/google/callback`;
+  const state = req.sessionToken!;
+  const scopes = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/userinfo.email',
+  ].join(' ');
 
-  return res.json({ success: true, status: 'connected' });
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(callbackUrl)}&response_type=code&scope=${encodeURIComponent(scopes)}&access_type=offline&prompt=consent&state=${encodeURIComponent(state)}`;
+
+  return res.json({ url: authUrl });
+});
+
+app.get('/api/auth/google/callback', async (req: Request, res: Response) => {
+  const { code, state, error } = req.query;
+  if (error || !code || !state) {
+    return res.redirect('/?email_status=cancelled');
+  }
+
+  const sessionToken = String(state);
+  const user = db.getUserBySession(sessionToken);
+  if (!user) {
+    return res.redirect('/?email_status=session_expired');
+  }
+
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const baseUrl = emailService.getBaseUrl();
+  const callbackUrl = `${baseUrl}/api/auth/google/callback`;
+
+  try {
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code: String(code),
+        client_id: clientId || '',
+        client_secret: clientSecret || '',
+        redirect_uri: callbackUrl,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    const tokenData = await tokenRes.json();
+    if (!tokenRes.ok || !tokenData.access_token) {
+      console.error('Google token exchange error:', tokenData);
+      return res.redirect('/?email_status=failed');
+    }
+
+    let googleEmail = user.email;
+    try {
+      const uRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
+      if (uRes.ok) {
+        const uData = await uRes.json();
+        if (uData.email) googleEmail = uData.email;
+      }
+    } catch {}
+
+    db.setEmailIntegration(user.id, {
+      status: 'connected',
+      email: googleEmail,
+      connectedAt: new Date().toISOString(),
+      message: 'Gmail connected. Scanning order confirmation emails for product photos.',
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token,
+    });
+
+    // Run photo matching on user's active parcels
+    matchGmailPhotosForUser(user.id, tokenData.access_token).catch((err) => {
+      console.warn('Gmail photo match background error:', err);
+    });
+
+    return res.redirect('/?email_status=connected');
+  } catch (err: unknown) {
+    console.error('Callback error:', err);
+    return res.redirect('/?email_status=error');
+  }
 });
 
 app.post('/api/integrations/email/disconnect', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
   db.setEmailIntegration(user.id, {
     status: 'disconnected',
-    message: 'Gmail connection removed and cached tokens cleared.',
+    message: 'Gmail disconnected.',
   });
   return res.json({ success: true, status: 'disconnected' });
 });
+
+app.post('/api/integrations/email/match', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
+  const state = db.getEmailIntegration(user.id);
+  if (state.status !== 'connected' || !state.accessToken) {
+    return res.status(400).json({ error: 'Gmail not connected.' });
+  }
+
+  const count = await matchGmailPhotosForUser(user.id, state.accessToken);
+  return res.json({ success: true, matchedCount: count });
+});
+
+// Photo matching engine for Gmail messages
+async function matchGmailPhotosForUser(userId: string, accessToken: string): Promise<number> {
+  const shipments = db.getShipmentsForUser(userId);
+  let matchedCount = 0;
+
+  for (const shipment of shipments) {
+    if (shipment.imageUrl && !shipment.imageUrl.includes('placeholder')) {
+      continue;
+    }
+
+    try {
+      const cleanTracking = shipment.trackingNumber.replace(/^…/, '').trim();
+      const query = `${cleanTracking} OR "${shipment.store}"`;
+      const listRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=3`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+
+      if (!listRes.ok) continue;
+      const listData = await listRes.json();
+      if (!listData.messages || listData.messages.length === 0) continue;
+
+      for (const msgRef of listData.messages) {
+        const msgRes = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgRef.id}?format=full`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (!msgRes.ok) continue;
+        const msg = await msgRes.json();
+
+        const imgUrl = extractProductImageUrl(msg);
+        if (imgUrl) {
+          db.updateShipment(shipment.id, userId, { imageUrl: imgUrl });
+          matchedCount++;
+          break;
+        }
+      }
+    } catch (e) {
+      console.warn(`Error matching photo for shipment ${shipment.id}:`, e);
+    }
+  }
+  return matchedCount;
+}
+
+function extractProductImageUrl(messagePayload: any): string | null {
+  try {
+    const raw = JSON.stringify(messagePayload);
+    const patterns = [
+      /https:\/\/[a-zA-Z0-9.\-_]*media-amazon\.com\/images\/I\/[a-zA-Z0-9_\-%.]+\.(?:jpg|jpeg|png|webp)/i,
+      /https:\/\/[a-zA-Z0-9.\-_]*ssl-images-amazon\.com\/images\/I\/[a-zA-Z0-9_\-%.]+\.(?:jpg|jpeg|png|webp)/i,
+      /https:\/\/rukminim[0-9]*\.flixcart\.com\/image\/[0-9a-zA-Z/_\-%.]+\.(?:jpeg|jpg|png|webp)/i,
+      /https:\/\/images-static\.nykaa\.com\/media\/catalog\/product\/[0-9a-zA-Z/_\-%.]+\.(?:jpg|jpeg|png|webp)/i,
+      /https:\/\/assets\.myntassets\.com\/[0-9a-zA-Z/_\-%.]+\.(?:jpg|jpeg|png|webp)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = raw.match(pattern);
+      if (match && match[0]) {
+        return match[0];
+      }
+    }
+  } catch {}
+  return null;
+}
 
 // --- Issues & Feedback Tickets ---
 app.get('/api/tickets', authMiddleware, (req: Request, res: Response) => {
@@ -814,13 +758,11 @@ app.post('/api/tickets', authMiddleware, (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Please explain what happened in the description.' });
   }
 
-  // Validate contact name
   const finalContactName = (contactName || user.name || '').trim();
   if (!finalContactName) {
     return res.status(400).json({ error: 'Name is required so our support team knows how to address you.' });
   }
 
-  // Validate preferred contact value
   if (preferredContactMethod === 'email') {
     const emailToUse = (contactEmail || user.email || '').trim();
     if (!emailToUse || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailToUse)) {
@@ -840,7 +782,6 @@ app.post('/api/tickets', authMiddleware, (req: Request, res: Response) => {
     }
   }
 
-  // Validate shipment requirement for shipment-related categories
   const shipmentRequired = isShipmentRequiredForCategory(category);
   if (shipmentRequired && !shipmentId && !trackingNumber) {
     return res.status(400).json({
@@ -848,7 +789,6 @@ app.post('/api/tickets', authMiddleware, (req: Request, res: Response) => {
     });
   }
 
-  // Validate attachment if provided
   if (attachmentSize && attachmentSize > 5 * 1024 * 1024) {
     return res.status(400).json({ error: 'Screenshot file size exceeds the 5 MB limit.' });
   }
@@ -887,17 +827,15 @@ app.post('/api/tickets', authMiddleware, (req: Request, res: Response) => {
 
   return res.status(201).json({
     ticket,
-    notice: 'Support request logged in ParcelPath Support Desk under your account. Note: Submitting this request does not trigger phone calls, SMS, or WhatsApp messages, and has not been directly submitted to the carrier or retailer.',
+    notice: 'Support request logged in ParcelPath Support Desk under your account.',
   });
 });
 
-// Protected staff view
 app.get('/api/staff/tickets', authMiddleware, (req: Request, res: Response) => {
   const user = req.user!;
   if (user.role !== 'staff' && user.role !== 'admin') {
     return res.status(403).json({ error: 'Staff authorization required.' });
   }
-
   return res.json({ tickets: db.getAllTickets() });
 });
 
@@ -917,7 +855,7 @@ app.put('/api/staff/tickets/:id', authMiddleware, (req: Request, res: Response) 
 });
 
 // --- Customer Care Configuration ---
-app.get('/api/config/support', (req: Request, res: Response) => {
+app.get('/api/config/support', (_req: Request, res: Response) => {
   const supportEmail = process.env.SUPPORT_EMAIL || null;
   const supportPhone = process.env.SUPPORT_PHONE || null;
   const supportWhatsapp = process.env.SUPPORT_WHATSAPP || null;
@@ -936,13 +874,14 @@ app.get('/api/config/support', (req: Request, res: Response) => {
   });
 });
 
-// JSON 404 handler for all unmatched API routes - prevents returning HTML on failed API requests
+// JSON 404 handler for all unmatched API routes
 app.all('/api/*', (req: Request, res: Response) => {
   return res.status(404).json({ error: `API route not found: ${req.method} ${req.url}` });
 });
 
 // --- Production / Dev Server Mounting ---
 async function startServer() {
+  await db.initAsync();
   const isProduction = process.env.NODE_ENV === 'production';
 
   if (!isProduction) {
@@ -955,7 +894,7 @@ async function startServer() {
   } else {
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req: Request, res: Response) => {
+    app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
@@ -965,7 +904,6 @@ async function startServer() {
   });
 }
 
-// In standard Node/Cloud Run/container run server. On Vercel, serverless function invokes app directly.
 if (!process.env.VERCEL) {
   startServer().catch((err) => {
     console.error('Failed to start server:', err);

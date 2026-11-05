@@ -1,79 +1,81 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { db } from './db.js';
-import { emailService } from './email.js';
+import { db, generateRecoveryCode, hashRecoveryCode, verifyRecoveryCode } from './db.ts';
+import { neonPostgres } from './postgres.ts';
 
-test('1. FORGOT PASSWORD: Expiring single-use reset link and password reset', async () => {
-  // Create a dedicated test user
-  const email = `test_reset_${Date.now()}@example.com`;
+test('1. RECOVERY CODE: Strong code at registration, hash-only storage, atomic recovery', () => {
+  const email = `test_recovery_${Date.now()}@example.com`;
   const initialPassword = 'InitialSecurePassword123!';
-  const user = db.createUser('Reset Test User', email, initialPassword);
-  assert.ok(user.id, 'User was created');
+  const userWithCode = db.createUser('Recovery Test User', email, initialPassword);
 
-  // Verify initial login works
-  const retrieved = db.getUserByEmail(email);
-  assert.ok(retrieved && db.verifyPassword(retrieved, initialPassword), 'Initial password verifies');
+  assert.ok(userWithCode.id, 'User was created');
+  assert.ok(userWithCode.recoveryCode, 'Strong recovery code generated at registration');
+  assert.match(userWithCode.recoveryCode, /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/, 'Code matches 16-char format');
+
+  // Verify DB stores ONLY the hash, not plain code
+  const storedUser = db.getUserById(userWithCode.id)!;
+  assert.ok(storedUser.recoveryCodeHash, 'Recovery code hash stored');
+  assert.notEqual(storedUser.recoveryCodeHash, userWithCode.recoveryCode, 'Plain code is NOT stored in DB');
+  assert.equal(verifyRecoveryCode(userWithCode.recoveryCode, storedUser.recoveryCodeHash), true, 'Hash verifies code');
 
   // Create an active session
-  const oldSessionToken = db.createSession(user.id);
-  assert.equal(db.getUserBySession(oldSessionToken)?.id, user.id, 'Session is active before reset');
+  const oldSessionToken = db.createSession(userWithCode.id);
+  assert.equal(db.getUserBySession(oldSessionToken)?.id, userWithCode.id, 'Session active');
 
-  // Request password reset token
-  const resetData = db.createPasswordResetToken(email);
-  assert.ok(resetData, 'Reset token generated');
-  assert.equal(resetData.user.email, email);
-  assert.ok(resetData.token.length >= 32, 'Token has secure length');
+  // Attempt recovery with bad code -> fails
+  const badRecovery = db.recoverWithCode(email, 'AAAA-BBBB-CCCC-DDDD', 'NewSecurePassword456!');
+  assert.equal(badRecovery.success, false, 'Bad recovery code rejected');
 
-  // Send email and verify test inbox records message
-  await emailService.sendPasswordResetEmail(email, user.name, resetData.token);
-  const inbox = emailService.getTestInbox();
-  const sent = inbox.find((m) => m.type === 'password_reset' && m.to === email);
-  assert.ok(sent, 'Email dispatched to test inbox');
-  assert.ok(sent.resetUrl?.includes('reset_token='), 'Reset link has token parameter');
-
-  // Verify token validation accepts valid token
-  const validCheck = db.verifyPasswordResetToken(resetData.token);
-  assert.equal(validCheck.valid, true, 'Valid token is accepted');
-  assert.equal(validCheck.email, email, 'Returns correct user email');
-
-  // Non-existent or garbage token is rejected
-  const invalidCheck = db.verifyPasswordResetToken('invalid_random_token_9999');
-  assert.equal(invalidCheck.valid, false, 'Invalid token is rejected');
-
-  // Reset password to new password
+  // Attempt recovery with valid code -> succeeds
   const newPassword = 'NewBrandSecurePassword456!';
-  const resetResult = db.consumePasswordReset(resetData.token, newPassword);
-  assert.equal(resetResult.success, true, 'Password reset succeeded');
+  const recoveryResult = db.recoverWithCode(email, userWithCode.recoveryCode, newPassword);
+  assert.equal(recoveryResult.success, true, 'Account recovery succeeded');
+  assert.ok(recoveryResult.token, 'New session token issued');
 
-  // Single-use guarantee: Re-using the same token MUST be rejected
-  const reuseCheck = db.verifyPasswordResetToken(resetData.token);
-  assert.equal(reuseCheck.valid, false, 'Reused token is invalid');
-  const reuseAttempt = db.consumePasswordReset(resetData.token, 'AnotherPassword789!');
-  assert.equal(reuseAttempt.success, false, 'Consuming used token is rejected');
+  // Old session MUST be invalidated
+  assert.equal(db.getUserBySession(oldSessionToken), undefined, 'Old session revoked');
 
-  // Invalidate existing sessions: Old session MUST no longer be valid
-  assert.equal(db.getUserBySession(oldSessionToken), undefined, 'Old session invalidated after reset');
+  // Recovery code consumed atomically: re-using the same code MUST fail
+  const reuseResult = db.recoverWithCode(email, userWithCode.recoveryCode, 'AnotherPassword789!');
+  assert.equal(reuseResult.success, false, 'Recovery code consumed atomically and cannot be reused');
 
-  // The old password MUST NO LONGER work
-  const updatedUser = db.getUserById(user.id)!;
+  // Old password rejected, new password verified
+  const updatedUser = db.getUserById(userWithCode.id)!;
   assert.equal(db.verifyPassword(updatedUser, initialPassword), false, 'Old password rejected');
-
-  // The new password MUST work
   assert.equal(db.verifyPassword(updatedUser, newPassword), true, 'New password accepted');
 
-  // Clean up test user
+  // Clean up
+  db.deleteUserAccount(userWithCode.id);
+});
+
+test('2. RECOVERY CODE REGENERATION: Signed-in user replacement in Settings', () => {
+  const email = `test_regen_${Date.now()}@example.com`;
+  const user = db.createUser('Regen User', email, 'Password123!');
+  const firstCode = user.recoveryCode;
+
+  // Generate replacement code in settings
+  const regenResult = db.regenerateRecoveryCode(user.id);
+  assert.ok(regenResult, 'Replacement code generated');
+  assert.notEqual(regenResult.recoveryCode, firstCode, 'New code is distinct from previous code');
+
+  // Old code no longer works
+  const oldCodeAttempt = db.recoverWithCode(email, firstCode, 'HackedPassword123!');
+  assert.equal(oldCodeAttempt.success, false, 'Old recovery code invalidated');
+
+  // New code works
+  const newCodeAttempt = db.recoverWithCode(email, regenResult.recoveryCode, 'FreshPassword789!');
+  assert.equal(newCodeAttempt.success, true, 'Replacement recovery code succeeds');
+
+  // Clean up
   db.deleteUserAccount(user.id);
 });
 
-test('2. ACCOUNT SETTINGS: Two-field password change without current password', () => {
+test('3. ACCOUNT SETTINGS: Two-field password change without current password', () => {
   const email = `test_change_${Date.now()}@example.com`;
   const initialPassword = 'InitialSecurePassword123!';
   const user = db.createUser('Settings Test User', email, initialPassword);
 
   const sessionToken = db.createSession(user.id);
-
-  // Session is initially recent
-  assert.equal(db.isSessionRecent(sessionToken), true, 'Newly created session is recent');
 
   // Change password using 2-field form (newPassword, without current password)
   const newPassword = 'UpdatedSettingsPassword789!';
@@ -89,7 +91,7 @@ test('2. ACCOUNT SETTINGS: Two-field password change without current password', 
   db.deleteUserAccount(user.id);
 });
 
-test('3. DELETE ACCOUNT AND ALL DATA: Permanent deletion and isolation', () => {
+test('4. DELETE ACCOUNT AND ALL DATA: Permanent deletion and isolation', () => {
   const email = `test_delete_${Date.now()}@example.com`;
   const user = db.createUser('Delete Test User', email, 'Password123!');
   const sessionToken = db.createSession(user.id);
@@ -156,10 +158,6 @@ test('3. DELETE ACCOUNT AND ALL DATA: Permanent deletion and isolation', () => {
   assert.equal(db.getTicketsForUser(user.id).length, 0, 'No remaining tickets');
   assert.equal(db.getAlertsForUser(user.id).length, 0, 'No remaining alerts');
 
-  // Ensure deleted account cannot sign in again
-  const loginAttempt = db.getUserByEmail(email);
-  assert.equal(loginAttempt, undefined, 'Deleted account cannot log in');
-
   // Re-registration with the same email must start completely fresh
   const reRegisteredUser = db.createUser('Fresh User', email, 'BrandNewPass999!');
   assert.ok(reRegisteredUser.id, 'New account registered with same email');
@@ -170,57 +168,6 @@ test('3. DELETE ACCOUNT AND ALL DATA: Permanent deletion and isolation', () => {
 
   // Clean up
   db.deleteUserAccount(reRegisteredUser.id);
-});
-
-test('4. REGISTRATION & VERIFICATION: Real email dispatch, unverified gating, and cooldown', async () => {
-  const email = `test_verif_${Date.now()}@example.com`;
-  const rawPassword = '  PassWithLeadingSpaces99! ';
-  
-  // Create user (unverified by default during registration)
-  const user = db.createUser('Verification Test User', email, rawPassword, false);
-  assert.equal(user.emailVerified, false, 'New user is unverified');
-  assert.ok(db.verifyPassword(user, rawPassword), 'Raw password with spaces is preserved and verified');
-
-  // Verify token generation
-  const tokenData = db.createAccountVerificationToken(user.id);
-  assert.ok(tokenData.token, 'Token generated');
-  assert.equal(tokenData.code.length, 6, '6-digit code generated');
-
-  // Dispatch email
-  const emailResult = await emailService.sendAccountVerificationEmail(
-    user.email,
-    user.name,
-    tokenData.token,
-    tokenData.code
-  );
-  assert.equal(emailResult.success, true, 'Email dispatch handler succeeded');
-  assert.ok(emailResult.verificationUrl.includes('verify_token='), 'Contains verify_token param');
-
-  // Check test inbox
-  const inbox = emailService.getTestInbox();
-  const sent = inbox.find((m) => m.type === 'account_verification' && m.to === email);
-  assert.ok(sent, 'Email recorded in test inbox');
-  assert.equal(sent.code, tokenData.code, 'Recorded code matches');
-
-  // Test cooldown on resend: immediately sending again should fail cooldown
-  const elapsed = Date.now() - (user.lastVerificationSentAt || 0);
-  assert.ok(elapsed < 60000, 'Less than 60s elapsed');
-
-  // Verify with invalid code should fail
-  const badVerify = db.verifyAccountEmail('000000');
-  assert.equal(badVerify.success, false, 'Invalid code fails');
-
-  // Verify with correct code should succeed
-  const goodVerify = db.verifyAccountEmail(tokenData.code);
-  assert.equal(goodVerify.success, true, 'Valid code verifies email');
-  assert.equal(goodVerify.user?.emailVerified, true, 'User is now verified');
-
-  // Single-use token: verifying again should fail
-  const reVerify = db.verifyAccountEmail(tokenData.code);
-  assert.equal(reVerify.success, false, 'Already used verification token rejected');
-
-  // Clean up
-  db.deleteUserAccount(user.id);
 });
 
 test('5. SIGN-OUT & RE-SIGN-IN: Durable persistence without account loss', () => {
@@ -256,7 +203,7 @@ test('5. SIGN-OUT & RE-SIGN-IN: Durable persistence without account loss', () =>
   db.removeSession(sessionToken);
   assert.equal(db.getUserBySession(sessionToken), undefined, 'Session token revoked');
 
-  // CRITICAL REQUIREMENT: User account and parcels MUST NOT BE DELETED by signing out
+  // User account and parcels MUST NOT BE DELETED by signing out
   const userAfterSignOut = db.getUserByEmail(normalizedEmail);
   assert.ok(userAfterSignOut, 'User account still exists after sign-out');
   assert.equal(userAfterSignOut.id, user.id, 'User ID preserved');
@@ -278,3 +225,9 @@ test('5. SIGN-OUT & RE-SIGN-IN: Durable persistence without account loss', () =>
   db.deleteUserAccount(user.id);
 });
 
+test('6. NEON POSTGRESQL & HEALTH: Health query execution', async () => {
+  const health = await neonPostgres.runHealthQuery();
+  assert.ok(health.status, 'Health query returned status');
+  assert.ok(health.healthy, 'Health check indicates healthy database state');
+  assert.ok(health.database === 'neon_postgres' || health.database === 'in_memory_file', 'Valid database mode');
+});

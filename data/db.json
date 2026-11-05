@@ -31,6 +31,24 @@
       "emailVerified": true,
       "createdAt": "2026-11-03T12:52:08.827Z",
       "lastVerificationSentAt": 1793710328828
+    },
+    {
+      "id": "user_33f411ef9a1b311c",
+      "email": "test_1793857324057@example.com",
+      "passwordHash": "scrypt:73c37f9581c5ad0a519ee2ff4c6c726c:b9e19ae431624c7e455a53c1185314cc925aa2ac05313e3391644014bf286efff2114ef3ff2c3683114571e8ac95a7f28f87696c1f07e161756d5a6fcf476dc2",
+      "name": "Re-Registered User",
+      "avatarInitial": "R",
+      "backupRecipient": "",
+      "deliveryInstructions": "",
+      "notifications": {
+        "statusUpdates": true,
+        "arrivalReminders": true
+      },
+      "role": "user",
+      "emailVerified": true,
+      "recoveryCodeHash": "scrypt:4c339687668ca19170112f6cf079f4c3:5eca5f805da33c0cc82e428cdb1558a3e277dae64e2a95b5f937490f1f6b054ef9f3f21f16c11b87b8678dc02e3acaa00b8fc8d0cd0f439e38d68cdaad9c420b",
+      "createdAt": "2026-11-05T05:42:04.661Z",
+      "recoveryCode": "XWDR-7K5T-RK3Y-ZUVE"
     }
   ],
   "shipments": [
@@ -247,6 +265,11 @@
       "userId": "user_bd9f67e23efc186b",
       "createdAt": 1793710329119,
       "lastVerifiedAt": 1793710329119
+    },
+    "sess_76b8262dbd6314ad57bca9522c693064948b7d61d8775831": {
+      "userId": "user_33f411ef9a1b311c",
+      "createdAt": 1793857324661,
+      "lastVerifiedAt": 1793857324661
     }
   },
   "emailIntegrations": {
@@ -294,7 +317,26 @@
     "user_0a50d351e50f87bd",
     "user_6a9913cfe068299d",
     "user_f0adbed3a8abb023",
-    "user_0d715483d8504f41"
+    "user_0d715483d8504f41",
+    "user_0f22ded21e1b7059",
+    "user_200fac46ab23e273",
+    "user_227658062c4f72a2",
+    "user_644a220ace4897fd",
+    "user_5193eb39fe303def",
+    "user_4b2781233978470f",
+    "user_b39ebbde71cddc77",
+    "user_2652045a61a3cbda",
+    "user_e929c5d2ae9c1388",
+    "user_0fa7cd7e15417e73",
+    "user_e7ebb0fa19b20f4a",
+    "user_244cd06db099f0ae",
+    "user_0848b92fa83219fb",
+    "user_ba6c39825b0cbb96",
+    "user_084c5938bcf03c0a",
+    "user_229f3a08af6d28fe",
+    "user_cec8f56671af9383",
+    "user_e17ef7e0659725c9",
+    "user_6b5752e7602b72fe"
   ],
   "deletedEmails": [
     "test_reset_1793705379169@example.com",
@@ -312,7 +354,22 @@
     "test_change_1793710305355@example.com",
     "test_delete_1793710305567@example.com",
     "test_verif_1793710305673@example.com",
-    "persistence_user_1793710305778@example.com"
+    "persistence_user_1793710305778@example.com",
+    "test_reset_1793854711487@example.com",
+    "test_change_1793854711738@example.com",
+    "test_delete_1793854711903@example.com",
+    "test_verif_1793854711992@example.com",
+    "persistence_user_1793854712069@example.com",
+    "test_reset_1793854874174@example.com",
+    "test_change_1793854874431@example.com",
+    "test_delete_1793854874613@example.com",
+    "test_verif_1793854874698@example.com",
+    "persistence_user_1793854874786@example.com",
+    "test_recovery_1793857207588@example.com",
+    "test_regen_1793857208038@example.com",
+    "test_change_1793857208594@example.com",
+    "test_delete_1793857209122@example.com",
+    "persistence_user_1793857209426@example.com"
   ],
   "verificationTokens": [
     {

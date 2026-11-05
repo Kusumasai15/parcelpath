@@ -1,5 +1,4 @@
 import { AccountSecurityCard } from './components/AccountSecurityCard';
-import { ResetPasswordModal } from './components/ResetPasswordModal';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -97,17 +96,21 @@ export default function App() {
   const [authInitialView, setAuthInitialView] = useState<'login' | 'register' | 'forgot_password'>('login');
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
   const [isNotifHelpOpen, setIsNotifHelpOpen] = useState(false);
-  const [isResetPasswordOpen, setIsResetPasswordOpen] = useState(false);
-  const [resetPasswordToken, setResetPasswordToken] = useState<string | null>(null);
 
-  // Automatically detect reset_token or verify_token in URL query parameters
+  // Automatically detect email_status or verify_token in URL query parameters
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
-      const resetTok = params.get('reset_token');
-      if (resetTok) {
-        setResetPasswordToken(resetTok);
-        setIsResetPasswordOpen(true);
+      const emailStatus = params.get('email_status');
+      if (emailStatus === 'connected') {
+        setSettingsNotice('Gmail connected successfully! Scanning for order product photos.');
+        setTimeout(() => setSettingsNotice(null), 5000);
+      } else if (emailStatus === 'cancelled') {
+        setSettingsNotice('Google authorization was cancelled.');
+        setTimeout(() => setSettingsNotice(null), 5000);
+      } else if (emailStatus === 'error') {
+        setSettingsNotice('Could not connect Gmail. Please verify OAuth credentials.');
+        setTimeout(() => setSettingsNotice(null), 5000);
       }
 
       const verifyTok = params.get('verify_token');
@@ -127,15 +130,9 @@ export default function App() {
               } catch {}
               setSettingsNotice('Email verified successfully! Welcome to ParcelPath.');
               setTimeout(() => setSettingsNotice(null), 5000);
-            } else {
-              setSettingsNotice(data.error || 'Email verification link is invalid or expired.');
-              setTimeout(() => setSettingsNotice(null), 5000);
             }
           })
-          .catch(() => {
-            setSettingsNotice('Could not verify email. Please try again.');
-            setTimeout(() => setSettingsNotice(null), 5000);
-          })
+          .catch(() => {})
           .finally(() => {
             try {
               window.history.replaceState({}, document.title, window.location.pathname);
@@ -641,26 +638,6 @@ export default function App() {
     }
   };
 
-  // Reset Password Success Handler
-  const handleResetPasswordSuccess = (_email: string) => {
-    setIsResetPasswordOpen(false);
-    setResetPasswordToken(null);
-    if (typeof window !== 'undefined') {
-      try {
-        window.history.replaceState({}, document.title, window.location.pathname);
-      } catch {}
-    }
-    activeSession.current = null;
-    try { localStorage.removeItem('parcelpath-session-token'); } catch {}
-    setSessionToken(null);
-    setCurrentUser(null);
-    setShipments([]);
-    setTickets([]);
-    setAlerts([]);
-    setSettingsNotice('Password successfully reset. Please sign in with your new password.');
-    setTimeout(() => setSettingsNotice(null), 5000);
-    setIsAuthOpen(true);
-  };
 
   // Delete Account
   const handleDeleteAccount = async () => {
@@ -1534,7 +1511,13 @@ export default function App() {
                             type="button"
                             onClick={() => handleOpenDetails(shipment)}
                           >
-                            <span className="merchant package-placeholder">📦</span>
+                            <span className={`merchant ${!shipment.imageUrl ? 'package-placeholder' : ''}`}>
+                              {shipment.imageUrl ? (
+                                <img src={shipment.imageUrl} alt={shipment.item} onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
+                              ) : (
+                                '📦'
+                              )}
+                            </span>
                             <span>
                               <span className="product">
                                 {shipment.item}
@@ -1578,7 +1561,13 @@ export default function App() {
                               type="button"
                               onClick={() => handleOpenDetails(shipment)}
                             >
-                              <span className="merchant package-placeholder">📦</span>
+                              <span className={`merchant ${!shipment.imageUrl ? 'package-placeholder' : ''}`}>
+                                {shipment.imageUrl ? (
+                                  <img src={shipment.imageUrl} alt={shipment.item} onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
+                                ) : (
+                                  '📦'
+                                )}
+                              </span>
                               <span>
                                 <span className="product">{shipment.item}</span>
                                 <span className="meta">{shipment.store} · {shipment.courierName}</span>
@@ -1634,7 +1623,13 @@ export default function App() {
                             type="button"
                             onClick={() => handleOpenDetails(shipment)}
                           >
-                            <span className="merchant package-placeholder">📦</span>
+                            <span className={`merchant ${!shipment.imageUrl ? 'package-placeholder' : ''}`}>
+                              {shipment.imageUrl ? (
+                                <img src={shipment.imageUrl} alt={shipment.item} onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
+                              ) : (
+                                '📦'
+                              )}
+                            </span>
                             <span>
                               <span className="product">
                                 {shipment.item}
@@ -1752,7 +1747,13 @@ export default function App() {
                                 type="button"
                                 onClick={() => handleOpenDetails(shipment)}
                               >
-                                <span className="merchant package-placeholder">✓</span>
+                                <span className={`merchant ${!shipment.imageUrl ? 'package-placeholder' : ''}`}>
+                                  {shipment.imageUrl ? (
+                                    <img src={shipment.imageUrl} alt={shipment.item} onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
+                                  ) : (
+                                    '✓'
+                                  )}
+                                </span>
                                 <span>
                                   <span className="product">
                                     {shipment.item}
@@ -2310,6 +2311,7 @@ export default function App() {
         isOpen={isEmailConnectOpen}
         onClose={() => setIsEmailConnectOpen(false)}
         sessionToken={sessionToken}
+        onRefreshShipments={fetchShipments}
       />
 
       <AuthModal
@@ -2327,26 +2329,6 @@ export default function App() {
         browserStatus={browserNotificationStatus}
         onSendTestAlert={handleSendTestAlert}
         onRequestPermission={handleRequestBrowserNotifications}
-      />
-
-      <ResetPasswordModal
-        isOpen={isResetPasswordOpen}
-        token={resetPasswordToken}
-        onClose={() => {
-          setIsResetPasswordOpen(false);
-          setResetPasswordToken(null);
-          if (typeof window !== 'undefined') {
-            try {
-              window.history.replaceState({}, document.title, window.location.pathname);
-            } catch {}
-          }
-        }}
-        onSuccess={handleResetPasswordSuccess}
-        onRequestNewLink={() => {
-          setIsResetPasswordOpen(false);
-          setResetPasswordToken(null);
-          setIsAuthOpen(true);
-        }}
       />
     </div>
   );

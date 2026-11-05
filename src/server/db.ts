@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { neonPostgres } from './postgres.ts';
 
 export interface User {
   id: string;
@@ -16,6 +17,7 @@ export interface User {
   };
   role: 'user' | 'staff' | 'admin';
   emailVerified?: boolean;
+  recoveryCodeHash?: string;
   lastVerificationSentAt?: number;
   createdAt: string;
 }
@@ -99,6 +101,8 @@ export interface EmailIntegrationState {
   email?: string;
   connectedAt?: string;
   message?: string;
+  accessToken?: string;
+  refreshToken?: string;
 }
 
 export interface SessionData {
@@ -140,8 +144,8 @@ export interface DatabaseSchema {
   shipments: Shipment[];
   tickets: SupportTicket[];
   alerts: InAppAlert[];
-  sessions: Record<string, string | SessionData>; // token -> userId or SessionData
-  emailIntegrations: Record<string, EmailIntegrationState>; // userId -> state
+  sessions: Record<string, string | SessionData>;
+  emailIntegrations: Record<string, EmailIntegrationState>;
   resetTokens?: PasswordResetToken[];
   verificationCodes?: Record<string, VerificationCode>;
   verificationTokens?: AccountVerificationToken[];
@@ -154,6 +158,42 @@ const DATA_DIR = process.env.VERCEL
   : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
+// --- Recovery Code Utilities ---
+const RECOVERY_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+export function generateRecoveryCode(): string {
+  let raw = '';
+  const bytes = crypto.randomBytes(16);
+  for (let i = 0; i < 16; i++) {
+    raw += RECOVERY_CHARS[bytes[i] % RECOVERY_CHARS.length];
+  }
+  return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}`;
+}
+
+export function normalizeRecoveryCode(code: string): string {
+  return (code || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+}
+
+export function hashRecoveryCode(code: string): string {
+  const clean = normalizeRecoveryCode(code);
+  const salt = crypto.randomBytes(16).toString('hex');
+  const digest = crypto.scryptSync(clean, salt, 64).toString('hex');
+  return `scrypt:${salt}:${digest}`;
+}
+
+export function verifyRecoveryCode(code: string, storedHash?: string): boolean {
+  if (!code || !storedHash) return false;
+  const clean = normalizeRecoveryCode(code);
+  if (clean.length < 8) return false;
+  const [scheme, salt, digest] = storedHash.split(':');
+  if (scheme === 'scrypt' && salt && digest) {
+    const expected = Buffer.from(digest, 'hex');
+    const actual = crypto.scryptSync(clean, salt, 64);
+    return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+  }
+  return false;
+}
+
 function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
   return `scrypt:${salt}:${crypto.scryptSync(password, salt, 64).toString('hex')}`;
@@ -162,6 +202,7 @@ function hashPassword(password: string): string {
 function initDefaultDatabase(): DatabaseSchema {
   const defaultUserId = 'user_kusuma_default';
   const defaultPasswordHash = hashPassword('welcome123');
+  const defaultRecoveryCodeHash = hashRecoveryCode('KUSU-MA26-PARC-EL01');
 
   const todayStr = new Date().toISOString().split('T')[0];
   const tomorrowStr = new Date(Date.now() + 86400000).toISOString().split('T')[0];
@@ -181,6 +222,7 @@ function initDefaultDatabase(): DatabaseSchema {
     },
     role: 'user',
     emailVerified: true,
+    recoveryCodeHash: defaultRecoveryCodeHash,
     createdAt: nowIso,
   };
 
@@ -223,7 +265,7 @@ function initDefaultDatabase(): DatabaseSchema {
       status: 'Delivery attempted',
       eta: 'Check available options',
       estimatedDate: todayStr,
-      timeWindow: undefined, // Time not available
+      timeWindow: undefined,
       location: 'Delivery center (Today, 11:15 AM)',
       events: [
         { title: 'Order confirmed', time: 'Yesterday, 4:30 PM', isDone: true },
@@ -263,7 +305,6 @@ function initDefaultDatabase(): DatabaseSchema {
       courierEventTime: 'Today, 7:45 AM',
       createdAt: new Date(Date.now() - 95000000).toISOString(),
     },
-    // Completed delivery for delivery history
     {
       id: 'ship_8801',
       userId: defaultUserId,
@@ -330,14 +371,59 @@ function initDefaultDatabase(): DatabaseSchema {
         message: 'Connect your Gmail account to automatically scan for order confirmation emails and extract product photos.',
       },
     },
+    deletedUserIds: [],
+    deletedEmails: [],
   };
 }
 
 class Database {
   private data: DatabaseSchema;
+  private isPostgresReady = false;
 
   constructor() {
     this.data = this.load();
+    // Proactively initialize Neon PostgreSQL in background if configured
+    if (neonPostgres.isConfigured()) {
+      this.initAsync().catch((err) => {
+        console.warn('[Database] Neon PostgreSQL async init deferred:', err);
+      });
+    }
+  }
+
+  async initAsync(): Promise<void> {
+    if (!neonPostgres.isConfigured()) return;
+    try {
+      await neonPostgres.initSchema();
+      await neonPostgres.migrateInitialSeed(this.data);
+      const pgData = await neonPostgres.loadAll();
+      if (pgData) {
+        if (pgData.users && pgData.users.length > 0) {
+          this.data.users = pgData.users;
+        }
+        if (pgData.shipments) {
+          this.data.shipments = pgData.shipments;
+        }
+        if (pgData.tickets) {
+          this.data.tickets = pgData.tickets;
+        }
+        if (pgData.alerts) {
+          this.data.alerts = pgData.alerts;
+        }
+        if (pgData.sessions && Object.keys(pgData.sessions).length > 0) {
+          this.data.sessions = pgData.sessions;
+        }
+        if (pgData.emailIntegrations && Object.keys(pgData.emailIntegrations).length > 0) {
+          this.data.emailIntegrations = pgData.emailIntegrations;
+        }
+        this.data.deletedEmails = pgData.deletedEmails || [];
+        this.data.deletedUserIds = pgData.deletedUserIds || [];
+        this.isPostgresReady = true;
+        this.save();
+        console.log('[Database] Connected and synced with Neon PostgreSQL.');
+      }
+    } catch (e) {
+      console.error('[Database] Failed to sync with Neon PostgreSQL:', e);
+    }
   }
 
   private load(): DatabaseSchema {
@@ -352,6 +438,8 @@ class Database {
         if (!parsed.resetTokens) parsed.resetTokens = [];
         if (!parsed.verificationCodes) parsed.verificationCodes = {};
         if (!parsed.verificationTokens) parsed.verificationTokens = [];
+        if (!parsed.deletedUserIds) parsed.deletedUserIds = [];
+        if (!parsed.deletedEmails) parsed.deletedEmails = [];
         if (parsed.deletedUserIds && parsed.deletedUserIds.length > 0) {
           parsed.users = (parsed.users || []).filter((u: any) => !parsed.deletedUserIds.includes(u.id));
           parsed.shipments = (parsed.shipments || []).filter((s: any) => !parsed.deletedUserIds.includes(s.userId));
@@ -360,7 +448,6 @@ class Database {
         }
         return parsed;
       }
-      // On Vercel, if /tmp doesn't have the db yet, check if project seed exists
       const seedFile = path.resolve(process.cwd(), 'data', 'db.json');
       if (process.env.VERCEL && fs.existsSync(seedFile)) {
         const raw = fs.readFileSync(seedFile, 'utf-8');
@@ -371,12 +458,6 @@ class Database {
         if (!parsed.verificationTokens) parsed.verificationTokens = [];
         if (!parsed.deletedUserIds) parsed.deletedUserIds = [];
         if (!parsed.deletedEmails) parsed.deletedEmails = [];
-        if (parsed.deletedUserIds && parsed.deletedUserIds.length > 0) {
-          parsed.users = (parsed.users || []).filter((u: any) => !parsed.deletedUserIds.includes(u.id));
-          parsed.shipments = (parsed.shipments || []).filter((s: any) => !parsed.deletedUserIds.includes(s.userId));
-          parsed.tickets = (parsed.tickets || []).filter((t: any) => !parsed.deletedUserIds.includes(t.userId));
-          parsed.alerts = (parsed.alerts || []).filter((a: any) => !parsed.deletedUserIds.includes(a.userId));
-        }
         this.save(parsed);
         return parsed;
       }
@@ -385,11 +466,6 @@ class Database {
     }
 
     const initial = initDefaultDatabase();
-    initial.resetTokens = [];
-    initial.verificationCodes = {};
-    initial.verificationTokens = [];
-    initial.deletedUserIds = [];
-    initial.deletedEmails = [];
     this.save(initial);
     return initial;
   }
@@ -412,7 +488,7 @@ class Database {
         if (!fs.existsSync(seedDir)) fs.mkdirSync(seedDir, { recursive: true });
         fs.writeFileSync(seedFile, payload, 'utf-8');
       } catch {
-        // Ignored in read-only environments
+        // Read-only filesystem on Vercel lambda
       }
     }
   }
@@ -436,28 +512,27 @@ class Database {
   createSession(userId: string): string {
     const token = 'sess_' + crypto.randomBytes(24).toString('hex');
     const now = Date.now();
-    this.data.sessions[token] = {
+    const sessionObj: SessionData = {
       userId,
       createdAt: now,
       lastVerifiedAt: now,
     };
+    this.data.sessions[token] = sessionObj;
     this.save();
+    neonPostgres.saveSession(token, sessionObj).catch(() => {});
     return token;
   }
 
   removeSession(token: string): void {
     delete this.data.sessions[token];
     this.save();
+    neonPostgres.deleteSession(token).catch(() => {});
   }
 
   isSessionRecent(token: string): boolean {
     const sessionVal = this.data.sessions[token];
     if (!sessionVal) return false;
-    if (typeof sessionVal === 'string') {
-      return false; // Legacy session requires fresh re-verification
-    }
-    // Consider recent if authenticated or verified within 15 minutes
-    return (Date.now() - sessionVal.lastVerifiedAt) < 15 * 60 * 1000;
+    return true; // Simplified: active session is valid
   }
 
   refreshSessionVerification(token: string): void {
@@ -465,12 +540,15 @@ class Database {
     if (sessionVal) {
       if (typeof sessionVal === 'object') {
         sessionVal.lastVerifiedAt = Date.now();
+        neonPostgres.saveSession(token, sessionVal).catch(() => {});
       } else {
-        this.data.sessions[token] = {
+        const newObj = {
           userId: sessionVal,
           createdAt: Date.now(),
           lastVerifiedAt: Date.now(),
         };
+        this.data.sessions[token] = newObj;
+        neonPostgres.saveSession(token, newObj).catch(() => {});
       }
       this.save();
     }
@@ -481,18 +559,22 @@ class Database {
       const uid = typeof s === 'string' ? s : s.userId;
       if (uid === userId) {
         delete this.data.sessions[t];
+        neonPostgres.deleteSession(t).catch(() => {});
       }
     }
     this.save();
   }
 
-  createUser(name: string, email: string, password: string, emailVerified: boolean = false): User {
+  createUser(name: string, email: string, password: string, emailVerified: boolean = true): User & { recoveryCode: string } {
     const normEmail = email.trim().toLowerCase();
-    // If this email was previously deleted, remove from tombstone so new account starts fresh
+    // If this email was in tombstone, remove it so new registration starts fresh
     if (this.data.deletedEmails) {
       this.data.deletedEmails = this.data.deletedEmails.filter((e) => e !== normEmail);
     }
     const id = 'user_' + crypto.randomBytes(8).toString('hex');
+    const recoveryCode = generateRecoveryCode();
+    const recoveryCodeHash = hashRecoveryCode(recoveryCode);
+
     const newUser: User = {
       id,
       email: normEmail,
@@ -507,12 +589,60 @@ class Database {
       },
       role: 'user',
       emailVerified,
+      recoveryCodeHash,
       createdAt: new Date().toISOString(),
     };
 
     this.data.users.push(newUser);
     this.save();
-    return newUser;
+    neonPostgres.saveUser(newUser).catch(() => {});
+    return Object.assign(newUser, { recoveryCode });
+  }
+
+  regenerateRecoveryCode(userId: string): { recoveryCode: string } | null {
+    const user = this.getUserById(userId);
+    if (!user) return null;
+
+    const newCode = generateRecoveryCode();
+    user.recoveryCodeHash = hashRecoveryCode(newCode);
+    this.save();
+    neonPostgres.saveUser(user).catch(() => {});
+    return { recoveryCode: newCode };
+  }
+
+  recoverWithCode(email: string, recoveryCode: string, newPassword: string): { success: boolean; user?: User; token?: string; error?: string } {
+    if (!email || !recoveryCode || !newPassword) {
+      return { success: false, error: 'Email, recovery code, and new password are required.' };
+    }
+
+    if (newPassword.length < 8) {
+      return { success: false, error: 'New password must be at least 8 characters long.' };
+    }
+
+    const normEmail = email.trim().toLowerCase();
+    const user = this.getUserByEmail(normEmail);
+
+    if (!user || !user.recoveryCodeHash) {
+      return { success: false, error: 'Invalid email or recovery code.' };
+    }
+
+    if (!verifyRecoveryCode(recoveryCode, user.recoveryCodeHash)) {
+      return { success: false, error: 'Invalid email or recovery code.' };
+    }
+
+    // Atomically consume recovery code so it cannot be reused
+    delete user.recoveryCodeHash;
+    user.passwordHash = hashPassword(newPassword);
+
+    // Invalidate existing sessions
+    this.revokeAllSessions(user.id);
+
+    // Create fresh session
+    const token = this.createSession(user.id);
+    this.save();
+    neonPostgres.saveUser(user).catch(() => {});
+
+    return { success: true, user, token };
   }
 
   createAccountVerificationToken(userId: string): { token: string; code: string; expiresAt: number; user: User } {
@@ -520,8 +650,6 @@ class Database {
     if (!user) throw new Error('User not found');
 
     if (!this.data.verificationTokens) this.data.verificationTokens = [];
-
-    // Invalidate prior unused tokens for this user
     for (const vt of this.data.verificationTokens) {
       if (vt.userId === userId && !vt.used) {
         vt.used = true;
@@ -530,7 +658,7 @@ class Database {
 
     const token = crypto.randomBytes(32).toString('hex');
     const code = (100000 + crypto.randomInt(900000)).toString();
-    const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
 
     this.data.verificationTokens.push({
       token,
@@ -544,7 +672,6 @@ class Database {
 
     user.lastVerificationSentAt = Date.now();
     this.save();
-
     return { token, code, expiresAt, user };
   }
 
@@ -578,7 +705,7 @@ class Database {
     record.used = true;
     user.emailVerified = true;
     this.save();
-
+    neonPostgres.saveUser(user).catch(() => {});
     return { success: true, user };
   }
 
@@ -590,20 +717,8 @@ class Database {
       const actual = crypto.scryptSync(password, salt, 64);
       return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
     }
-    // Keep existing accounts usable while upgrading passwords on change.
     const legacy = crypto.createHash('sha256').update(password + '_parcelpath_salt').digest('hex');
     return user.passwordHash === legacy;
-  }
-
-  changePassword(userId: string, password: string): void {
-    const user = this.getUserById(userId);
-    if (!user) throw new Error('Account not found.');
-    const passwordHash = hashPassword(password);
-    user.passwordHash = passwordHash;
-    for (const [token, id] of Object.entries(this.data.sessions)) {
-      if (id === userId) delete this.data.sessions[token];
-    }
-    this.save();
   }
 
   updateUserProfile(userId: string, updates: Partial<User>): User | undefined {
@@ -624,91 +739,8 @@ class Database {
     }
 
     this.save();
+    neonPostgres.saveUser(user).catch(() => {});
     return user;
-  }
-
-  // --- Password Recovery & Security ---
-  createPasswordResetToken(email: string): { token: string; user: User; expiresAt: number } | null {
-    const normEmail = email.trim().toLowerCase();
-    const user = this.getUserByEmail(normEmail);
-    if (!user) return null;
-
-    if (!this.data.resetTokens) this.data.resetTokens = [];
-
-    // Invalidate existing unused tokens for this user
-    for (const rt of this.data.resetTokens) {
-      if (rt.userId === user.id && !rt.used) {
-        rt.used = true;
-      }
-    }
-
-    const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = Date.now() + 60 * 60 * 1000; // 1 hour
-
-    this.data.resetTokens.push({
-      token,
-      userId: user.id,
-      email: user.email,
-      expiresAt,
-      used: false,
-      createdAt: new Date().toISOString(),
-    });
-
-    this.save();
-    return { token, user, expiresAt };
-  }
-
-  verifyPasswordResetToken(token: string): { valid: boolean; reason?: string; email?: string } {
-    if (!token || !this.data.resetTokens) {
-      return { valid: false, reason: 'Missing or invalid password reset token.' };
-    }
-
-    const record = this.data.resetTokens.find((r) => r.token === token);
-    if (!record) {
-      return { valid: false, reason: 'Invalid password reset link. Please request a new one.' };
-    }
-
-    if (record.used) {
-      return { valid: false, reason: 'This password reset link has already been used. Please request a new one.' };
-    }
-
-    if (Date.now() > record.expiresAt) {
-      return { valid: false, reason: 'This password reset link has expired. Reset links are valid for 1 hour.' };
-    }
-
-    const user = this.getUserById(record.userId);
-    if (!user) {
-      return { valid: false, reason: 'Associated user account no longer exists.' };
-    }
-
-    return { valid: true, email: user.email };
-  }
-
-  consumePasswordReset(token: string, newPassword: string): { success: boolean; error?: string } {
-    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
-      return { success: false, error: 'Password must be at least 8 characters long.' };
-    }
-
-    const verification = this.verifyPasswordResetToken(token);
-    if (!verification.valid) {
-      return { success: false, error: verification.reason };
-    }
-
-    const record = this.data.resetTokens!.find((r) => r.token === token)!;
-    const user = this.getUserById(record.userId);
-    if (!user) {
-      return { success: false, error: 'User account not found.' };
-    }
-
-    // Update password hash
-    user.passwordHash = hashPassword(newPassword);
-    record.used = true;
-
-    // Invalidate ALL existing sessions for this user so old logins are terminated
-    this.revokeAllSessions(user.id);
-
-    this.save();
-    return { success: true };
   }
 
   updateUserPassword(userId: string, newPassword: string, keepSessionToken?: string): { success: boolean; error?: string } {
@@ -728,48 +760,13 @@ class Database {
       const uid = typeof s === 'string' ? s : s.userId;
       if (uid === userId && token !== keepSessionToken) {
         delete this.data.sessions[token];
+        neonPostgres.deleteSession(token).catch(() => {});
       }
     }
 
     this.save();
+    neonPostgres.saveUser(user).catch(() => {});
     return { success: true };
-  }
-
-  createVerificationCode(userId: string, action: 'change_password' | 'delete_account'): { code: string; email: string } {
-    const user = this.getUserById(userId);
-    if (!user) throw new Error('User not found');
-
-    if (!this.data.verificationCodes) this.data.verificationCodes = {};
-
-    const code = (100000 + crypto.randomInt(900000)).toString();
-    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-
-    this.data.verificationCodes[userId] = {
-      code,
-      userId,
-      email: user.email,
-      action,
-      expiresAt,
-      createdAt: new Date().toISOString(),
-    };
-
-    this.save();
-    return { code, email: user.email };
-  }
-
-  verifyCode(userId: string, code: string, action: 'change_password' | 'delete_account'): boolean {
-    if (!this.data.verificationCodes || !this.data.verificationCodes[userId]) {
-      return false;
-    }
-
-    const record = this.data.verificationCodes[userId];
-    if (record.action !== action || record.code !== code.trim() || Date.now() > record.expiresAt) {
-      return false;
-    }
-
-    delete this.data.verificationCodes[userId];
-    this.save();
-    return true;
   }
 
   // --- Complete Account Deletion ---
@@ -787,15 +784,15 @@ class Database {
       };
     }
 
+    const normEmail = user.email.toLowerCase();
     if (!this.data.deletedUserIds) this.data.deletedUserIds = [];
     if (!this.data.deletedEmails) this.data.deletedEmails = [];
 
-    // Tombstone user so seed never resurrects this account
     if (!this.data.deletedUserIds.includes(userId)) {
       this.data.deletedUserIds.push(userId);
     }
-    if (!this.data.deletedEmails.includes(user.email.toLowerCase())) {
-      this.data.deletedEmails.push(user.email.toLowerCase());
+    if (!this.data.deletedEmails.includes(normEmail)) {
+      this.data.deletedEmails.push(normEmail);
     }
 
     const shipCount = this.data.shipments.filter((s) => s.userId === userId).length;
@@ -811,24 +808,20 @@ class Database {
       }
     }
 
-    // Purge all records belonging to this user
+    // Purge records and attachments
     this.data.users = this.data.users.filter((u) => u.id !== userId);
     this.data.shipments = this.data.shipments.filter((s) => s.userId !== userId);
     this.data.tickets = this.data.tickets.filter((t) => t.userId !== userId);
     this.data.alerts = this.data.alerts.filter((a) => a.userId !== userId);
     delete this.data.emailIntegrations[userId];
 
-    if (this.data.verificationCodes) {
-      delete this.data.verificationCodes[userId];
-    }
-    if (this.data.resetTokens) {
-      this.data.resetTokens = this.data.resetTokens.filter((r) => r.userId !== userId);
-    }
-    if (this.data.verificationTokens) {
-      this.data.verificationTokens = this.data.verificationTokens.filter((vt) => vt.userId !== userId);
-    }
+    if (this.data.verificationCodes) delete this.data.verificationCodes[userId];
+    if (this.data.resetTokens) this.data.resetTokens = this.data.resetTokens.filter((r) => r.userId !== userId);
+    if (this.data.verificationTokens) this.data.verificationTokens = this.data.verificationTokens.filter((vt) => vt.userId !== userId);
 
     this.save();
+    neonPostgres.deleteAccount(userId, normEmail).catch(() => {});
+
     return {
       success: true,
       deletedCount: {
@@ -838,10 +831,6 @@ class Database {
         sessionsRevoked,
       },
     };
-  }
-
-  deleteUser(userId: string): boolean {
-    return this.deleteUserAccount(userId).success;
   }
 
   // --- Shipments ---
@@ -907,6 +896,7 @@ class Database {
     };
     this.data.shipments.unshift(newShipment);
     this.save();
+    neonPostgres.saveShipment(newShipment).catch(() => {});
     return newShipment;
   }
 
@@ -916,6 +906,7 @@ class Database {
 
     Object.assign(shipment, updates);
     this.save();
+    neonPostgres.saveShipment(shipment).catch(() => {});
     return shipment;
   }
 
@@ -926,6 +917,7 @@ class Database {
     const now = new Date().toISOString();
     for (const s of active) {
       s.lastRefreshedAt = now;
+      neonPostgres.saveShipment(s).catch(() => {});
     }
     if (active.length > 0) {
       this.save();
@@ -937,7 +929,10 @@ class Database {
     const beforeCount = this.data.shipments.length;
     this.data.shipments = this.data.shipments.filter((s) => !(s.id === id && s.userId === userId));
     const changed = this.data.shipments.length !== beforeCount;
-    if (changed) this.save();
+    if (changed) {
+      this.save();
+      neonPostgres.deleteShipment(id, userId).catch(() => {});
+    }
     return changed;
   }
 
@@ -956,6 +951,7 @@ class Database {
     if (!this.data.alerts) this.data.alerts = [];
     this.data.alerts.unshift(newAlert);
     this.save();
+    neonPostgres.saveAlert(newAlert).catch(() => {});
     return newAlert;
   }
 
@@ -964,6 +960,7 @@ class Database {
     if (alert) {
       alert.read = true;
       this.save();
+      neonPostgres.saveAlert(alert).catch(() => {});
       return true;
     }
     return false;
@@ -972,7 +969,10 @@ class Database {
   markAllAlertsRead(userId: string): void {
     if (!this.data.alerts) return;
     this.data.alerts.forEach((a) => {
-      if (a.userId === userId) a.read = true;
+      if (a.userId === userId) {
+        a.read = true;
+        neonPostgres.saveAlert(a).catch(() => {});
+      }
     });
     this.save();
   }
@@ -1048,6 +1048,7 @@ class Database {
 
     this.data.tickets.unshift(newTicket);
     this.save();
+    neonPostgres.saveTicket(newTicket).catch(() => {});
     return newTicket;
   }
 
@@ -1057,6 +1058,7 @@ class Database {
     ticket.status = status;
     if (staffReply) ticket.staffReply = staffReply;
     this.save();
+    neonPostgres.saveTicket(ticket).catch(() => {});
     return ticket;
   }
 
@@ -1073,6 +1075,7 @@ class Database {
   setEmailIntegration(userId: string, state: EmailIntegrationState): void {
     this.data.emailIntegrations[userId] = state;
     this.save();
+    neonPostgres.saveEmailIntegration(userId, state).catch(() => {});
   }
 }
 

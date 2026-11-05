@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, Eye, EyeOff, ShieldCheck, AlertCircle, CheckCircle2, KeyRound, Trash2 } from 'lucide-react';
+import { Lock, Eye, EyeOff, CheckCircle2, KeyRound, Trash2, Shield, Copy, Check } from 'lucide-react';
 import { UserProfile } from '../types';
 
 interface AccountSecurityCardProps {
@@ -16,20 +16,14 @@ export const AccountSecurityCard: React.FC<AccountSecurityCardProps> = ({
   currentUser,
   onAccountDeleted,
   onNotice,
-  onOpenAuth,
-  onRequireReauth,
 }) => {
+  // If user is signed out, hide both account actions and the sign-in prompts completely
+  if (!currentUser || !sessionToken) {
+    return null;
+  }
+
   // Password Change State
   const [isChangingPassword, setIsChangingPassword] = useState(false);
-  const [needsVerification, setNeedsVerification] = useState(false);
-  const [verificationMode, setVerificationMode] = useState<'code' | 'password'>('code');
-  const [verificationCode, setVerificationCode] = useState('');
-  const [verifyPasswordInput, setVerifyPasswordInput] = useState('');
-  const [codeSent, setCodeSent] = useState(false);
-  const [verificationLoading, setVerificationLoading] = useState(false);
-  const [verificationError, setVerificationError] = useState<string | null>(null);
-
-  // Two-Field Password Form
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showNewPassword, setShowNewPassword] = useState(false);
@@ -38,193 +32,18 @@ export const AccountSecurityCard: React.FC<AccountSecurityCardProps> = ({
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
 
+  // Recovery Code State
+  const [replacementCode, setReplacementCode] = useState<string | null>(null);
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [recoveryCopied, setRecoveryCopied] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+
   // Delete Account State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
-  const [deleteConfirmText, setDeleteConfirmText] = useState('');
-  const [deleteNeedsVerification, setDeleteNeedsVerification] = useState(false);
-  const [deleteCode, setDeleteCode] = useState('');
-  const [deleteCodeSent, setDeleteCodeSent] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-async function safeParseJson(res: Response): Promise<{ ok: boolean; status: number; data: any; error?: string }> {
-  const contentType = res.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    try {
-      const data = await res.json();
-      return { ok: res.ok, status: res.status, data, error: data.error };
-    } catch {
-      return { ok: res.ok, status: res.status, data: {}, error: 'Invalid JSON response from server.' };
-    }
-  }
-  const text = await res.text().catch(() => '');
-  const snippet = text.slice(0, 150).replace(/<[^>]+>/g, '').trim();
-  return {
-    ok: false,
-    status: res.status,
-    data: {},
-    error: res.status === 404
-      ? 'Endpoint not found (404).'
-      : `Server returned ${res.status}${snippet ? `: ${snippet}` : ''}`,
-  };
-}
-
-  if (!currentUser || !sessionToken) {
-    return (
-      <article className="settings-card">
-        <h2>Account security &amp; password</h2>
-        <p className="support-copy">Update your account password or manage security settings.</p>
-
-        <div style={{ marginTop: '16px' }}>
-          <div
-            style={{
-              padding: '16px',
-              borderRadius: '10px',
-              border: '1px solid var(--line)',
-              background: 'var(--surface)',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-              <KeyRound size={18} style={{ color: 'var(--amber)' }} />
-              <strong style={{ fontSize: '13px' }}>Change password</strong>
-            </div>
-            <p style={{ margin: '0 0 14px', fontSize: '12px', color: 'var(--muted)', lineHeight: '1.45' }}>
-              You are currently signed out. Sign in or complete verified recovery before changing your password.
-            </p>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className="primary"
-                onClick={() => onOpenAuth?.('login')}
-              >
-                Sign in to change password
-              </button>
-              <button
-                type="button"
-                className="details"
-                onClick={() => onOpenAuth?.('forgot_password')}
-              >
-                Forgot password?
-              </button>
-            </div>
-          </div>
-
-          <div
-            style={{
-              padding: '16px',
-              borderRadius: '10px',
-              border: '1px solid var(--line)',
-              background: 'var(--surface)',
-              marginTop: '12px',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-              <Trash2 size={18} style={{ color: '#fc8181' }} />
-              <strong style={{ fontSize: '13px', color: '#fc8181' }}>Delete account &amp; all data</strong>
-            </div>
-            <p style={{ margin: '0 0 14px', fontSize: '12px', color: 'var(--muted)', lineHeight: '1.45' }}>
-              Sign in to permanently erase your account, all shipments, customer care tickets, and preferences.
-            </p>
-            <button
-              type="button"
-              className="danger"
-              onClick={() => onOpenAuth?.('login')}
-            >
-              Sign in to delete account
-            </button>
-          </div>
-        </div>
-      </article>
-    );
-  }
-
-  // 1. Initiate Change Password
-  const handleStartChangePassword = async () => {
-    setIsChangingPassword(true);
-    setPasswordError(null);
-    setPasswordSuccess(null);
-    setVerificationError(null);
-    setNewPassword('');
-    setConfirmPassword('');
-
-    try {
-      const res = await fetch('/api/auth/session-status', {
-        headers: { Authorization: `Bearer ${sessionToken}` },
-      });
-      const data = await res.json();
-      if (data.isRecent) {
-        setNeedsVerification(false);
-      } else {
-        setNeedsVerification(true);
-        setCodeSent(false);
-      }
-    } catch {
-      setNeedsVerification(true);
-    }
-  };
-
-  // Request verification code for password change
-  const handleRequestVerificationCode = async () => {
-    setVerificationLoading(true);
-    setVerificationError(null);
-    try {
-      const res = await fetch('/api/auth/request-verification', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${sessionToken}`,
-        },
-        body: JSON.stringify({ action: 'change_password' }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setCodeSent(true);
-      } else {
-        throw new Error(data.error || 'Failed to send verification code.');
-      }
-    } catch (err: unknown) {
-      setVerificationError(err instanceof Error ? err.message : 'Failed to send verification code.');
-    } finally {
-      setVerificationLoading(false);
-    }
-  };
-
-  // Verify session before password change
-  const handleVerifySession = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setVerificationLoading(true);
-    setVerificationError(null);
-
-    const payload = verificationMode === 'code'
-      ? { code: verificationCode.trim(), action: 'change_password' }
-      : { password: verifyPasswordInput, action: 'change_password' };
-
-    try {
-      const res = await fetch('/api/auth/verify-session', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${sessionToken}`,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Verification failed. Please check your credentials.');
-      }
-
-      setNeedsVerification(false);
-      setVerificationCode('');
-      setVerifyPasswordInput('');
-    } catch (err: unknown) {
-      setVerificationError(err instanceof Error ? err.message : 'Verification failed.');
-    } finally {
-      setVerificationLoading(false);
-    }
-  };
-
-  // Submit Two-Field Password Change
+  // Submit Password Change (Active session, no re-prompting)
   const handleSubmitPasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
     setPasswordError(null);
@@ -257,37 +76,17 @@ async function safeParseJson(res: Response): Promise<{ ok: boolean; status: numb
 
       const data = await res.json();
       if (!res.ok) {
-        if (data.needsVerification) {
-          setNeedsVerification(true);
-          throw new Error('Your session has timed out. Please re-verify to change your password.');
-        }
         throw new Error(data.error || 'Failed to update password.');
       }
 
-      if (data.sessionsRevoked) {
-        setPasswordSuccess('Password successfully updated! All sessions have been revoked. Redirecting to sign in...');
-        onNotice('Password updated. Please sign in with your new password.');
-        setNewPassword('');
-        setConfirmPassword('');
-        setTimeout(() => {
-          setIsChangingPassword(false);
-          setPasswordSuccess(null);
-          if (onRequireReauth) {
-            onRequireReauth();
-          } else {
-            onAccountDeleted();
-          }
-        }, 2200);
-        return;
-      }
-
       setPasswordSuccess('Password successfully updated! All other active sessions have been invalidated.');
+      onNotice('Password updated successfully.');
       setNewPassword('');
       setConfirmPassword('');
       setTimeout(() => {
         setIsChangingPassword(false);
         setPasswordSuccess(null);
-      }, 4000);
+      }, 3000);
     } catch (err: unknown) {
       setPasswordError(err instanceof Error ? err.message : 'Failed to update password.');
     } finally {
@@ -295,79 +94,53 @@ async function safeParseJson(res: Response): Promise<{ ok: boolean; status: numb
     }
   };
 
-  // 2. Delete Account Logic
-  const handleOpenDeleteModal = async () => {
-    setIsDeleteModalOpen(true);
-    setDeleteConfirmText('');
-    setDeleteError(null);
-    setDeleteCodeSent(false);
+  // Generate Replacement Recovery Code
+  const handleGenerateReplacementCode = async () => {
+    setRecoveryLoading(true);
+    setRecoveryError(null);
+    setReplacementCode(null);
+    setRecoveryCopied(false);
 
     try {
-      const res = await fetch('/api/auth/session-status', {
-        headers: { Authorization: `Bearer ${sessionToken}` },
-      });
-      const data = await res.json();
-      setDeleteNeedsVerification(!data.isRecent);
-    } catch {
-      setDeleteNeedsVerification(true);
-    }
-  };
-
-  const handleRequestDeleteCode = async () => {
-    setDeleteLoading(true);
-    setDeleteError(null);
-    try {
-      const res = await fetch('/api/auth/request-verification', {
+      const res = await fetch('/api/auth/recovery-code/regenerate', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           Authorization: `Bearer ${sessionToken}`,
         },
-        body: JSON.stringify({ action: 'delete_account' }),
       });
+
       const data = await res.json();
-      if (res.ok) {
-        setDeleteCodeSent(true);
-      } else {
-        throw new Error(data.error || 'Failed to send delete verification code.');
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to generate recovery code.');
       }
+
+      setReplacementCode(data.recoveryCode);
+      onNotice('New recovery code generated. Store it safely.');
     } catch (err: unknown) {
-      setDeleteError(err instanceof Error ? err.message : 'Failed to send verification code.');
+      setRecoveryError(err instanceof Error ? err.message : 'Failed to generate replacement code.');
     } finally {
-      setDeleteLoading(false);
+      setRecoveryLoading(false);
     }
   };
 
-  const handleConfirmDelete = async () => {
-    if (deleteConfirmText.trim().toUpperCase() !== 'DELETE') {
-      setDeleteError('Please type DELETE to confirm account deletion.');
-      return;
-    }
+  const handleCopyRecoveryCode = () => {
+    if (!replacementCode) return;
+    navigator.clipboard.writeText(replacementCode);
+    setRecoveryCopied(true);
+    setTimeout(() => setRecoveryCopied(false), 2500);
+  };
 
+  // Delete Account Confirmation
+  const handleConfirmDelete = async () => {
     setDeleteLoading(true);
     setDeleteError(null);
 
     try {
-      // If verification needed, verify code first
-      if (deleteNeedsVerification) {
-        const verifyRes = await fetch('/api/auth/verify-session', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${sessionToken}`,
-          },
-          body: JSON.stringify({ code: deleteCode.trim(), action: 'delete_account' }),
-        });
-        const verifyData = await verifyRes.json();
-        if (!verifyRes.ok) {
-          throw new Error(verifyData.error || 'Invalid 6-digit security code.');
-        }
-      }
-
-      // Execute permanent deletion
       const res = await fetch('/api/auth/account', {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${sessionToken}` },
+        headers: {
+          Authorization: `Bearer ${sessionToken}`,
+        },
       });
 
       const data = await res.json();
@@ -375,8 +148,9 @@ async function safeParseJson(res: Response): Promise<{ ok: boolean; status: numb
         throw new Error(data.error || 'Failed to delete account.');
       }
 
+      // Show success ONLY after deletion completes
       setIsDeleteModalOpen(false);
-      onNotice('Your account, shipments, customer tickets, alerts, and sessions have been permanently deleted.');
+      onNotice('Your account and all your data have been permanently deleted.');
       onAccountDeleted();
     } catch (err: unknown) {
       setDeleteError(err instanceof Error ? err.message : 'Failed to delete account.');
@@ -417,190 +191,25 @@ async function safeParseJson(res: Response): Promise<{ ok: boolean; status: numb
         )}
 
         {!isChangingPassword ? (
-          <div className="simple-actions">
+          <div className="simple-actions" style={{ marginBottom: '20px' }}>
             <button
               className="primary"
               type="button"
-              onClick={handleStartChangePassword}
+              onClick={() => {
+                setIsChangingPassword(true);
+                setPasswordError(null);
+                setPasswordSuccess(null);
+                setNewPassword('');
+                setConfirmPassword('');
+              }}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
             >
               <KeyRound size={15} /> Change password
             </button>
           </div>
-        ) : needsVerification ? (
-          /* SECURITY VERIFICATION STEP */
-          <div
-            style={{
-              padding: '16px',
-              borderRadius: '10px',
-              background: 'var(--surface-raised)',
-              border: '1px solid var(--line)',
-              marginBottom: '16px',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', marginBottom: '12px' }}>
-              <ShieldCheck size={20} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: '2px' }} />
-              <div>
-                <h4 style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 600, color: 'var(--ink)' }}>
-                  Security Verification Required
-                </h4>
-                <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.45, color: 'var(--muted)' }}>
-                  To protect your account, please verify your session before changing your password.
-                </p>
-              </div>
-            </div>
-
-            {verificationError && (
-              <div
-                style={{
-                  padding: '8px 10px',
-                  borderRadius: '6px',
-                  backgroundColor: 'color-mix(in srgb, #e53e3e 15%, var(--page))',
-                  color: '#e53e3e',
-                  fontSize: '11px',
-                  marginBottom: '12px',
-                }}
-              >
-                {verificationError}
-              </div>
-            )}
-
-            <form onSubmit={handleVerifySession}>
-              <div style={{ display: 'flex', gap: '16px', marginBottom: '12px' }}>
-                <label style={{ fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <input
-                    type="radio"
-                    name="verify-mode"
-                    checked={verificationMode === 'code'}
-                    onChange={() => setVerificationMode('code')}
-                  />
-                  <span>Email security code</span>
-                </label>
-                <label style={{ fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <input
-                    type="radio"
-                    name="verify-mode"
-                    checked={verificationMode === 'password'}
-                    onChange={() => setVerificationMode('password')}
-                  />
-                  <span>Current account password</span>
-                </label>
-              </div>
-
-              {verificationMode === 'code' ? (
-                <div>
-                  {!codeSent ? (
-                    <button
-                      type="button"
-                      onClick={handleRequestVerificationCode}
-                      disabled={verificationLoading}
-                      style={{
-                        padding: '8px 14px',
-                        borderRadius: '6px',
-                        background: 'var(--amber)',
-                        color: '#ffffff',
-                        border: 'none',
-                        fontSize: '12px',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        marginBottom: '12px',
-                      }}
-                    >
-                      {verificationLoading ? 'Sending code...' : `Send 6-digit code to ${currentUser.email}`}
-                    </button>
-                  ) : (
-                    <div>
-                      <p style={{ fontSize: '11px', color: '#38a169', margin: '0 0 8px', fontWeight: 500 }}>
-                        ✓ 6-digit code sent to {currentUser.email}. Enter it below:
-                      </p>
-                      <input
-                        type="text"
-                        maxLength={6}
-                        value={verificationCode}
-                        onChange={(e) => setVerificationCode(e.target.value)}
-                        placeholder="123456"
-                        required
-                        style={{
-                          width: '100%',
-                          maxWidth: '220px',
-                          padding: '8px 10px',
-                          borderRadius: '6px',
-                          border: '1px solid var(--line)',
-                          background: 'var(--page)',
-                          color: 'var(--ink)',
-                          fontSize: '14px',
-                          letterSpacing: '3px',
-                          fontWeight: 700,
-                          textAlign: 'center',
-                          marginBottom: '12px',
-                          display: 'block',
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div style={{ marginBottom: '12px' }}>
-                  <label htmlFor="verify-pwd-input" style={{ display: 'block', fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>
-                    Current Password
-                  </label>
-                  <input
-                    id="verify-pwd-input"
-                    type="password"
-                    value={verifyPasswordInput}
-                    onChange={(e) => setVerifyPasswordInput(e.target.value)}
-                    placeholder="••••••••"
-                    required
-                    style={{
-                      width: '100%',
-                      maxWidth: '280px',
-                      padding: '8px 10px',
-                      borderRadius: '6px',
-                      border: '1px solid var(--line)',
-                      background: 'var(--page)',
-                      color: 'var(--ink)',
-                      fontSize: '12px',
-                    }}
-                  />
-                </div>
-              )}
-
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  type="button"
-                  onClick={() => setIsChangingPassword(false)}
-                  style={{
-                    padding: '7px 12px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--line)',
-                    background: 'var(--surface)',
-                    color: 'var(--ink)',
-                    fontSize: '12px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Cancel
-                </button>
-                {(codeSent || verificationMode === 'password') && (
-                  <button
-                    type="submit"
-                    className="primary"
-                    disabled={verificationLoading || (verificationMode === 'code' ? verificationCode.length < 6 : !verifyPasswordInput)}
-                    style={{
-                      padding: '7px 14px',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                    }}
-                  >
-                    {verificationLoading ? 'Verifying...' : 'Verify & Continue'}
-                  </button>
-                )}
-              </div>
-            </form>
-          </div>
         ) : (
-          /* TWO-FIELD PASSWORD FORM (NO CURRENT PASSWORD FIELD REQUIRED) */
-          <form onSubmit={handleSubmitPasswordChange} style={{ maxWidth: '420px' }}>
+          /* Simplified Two-Field Password Form */
+          <form onSubmit={handleSubmitPasswordChange} style={{ maxWidth: '420px', marginBottom: '24px' }}>
             {passwordError && (
               <div
                 style={{
@@ -754,7 +363,112 @@ async function safeParseJson(res: Response): Promise<{ ok: boolean; status: numb
           </form>
         )}
 
-        <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '24px 0' }} />
+        <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '20px 0' }} />
+
+        {/* RECOVERY CODE MANAGEMENT */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+          <Shield size={18} style={{ color: 'var(--amber)' }} />
+          <h2 style={{ margin: 0 }}>Account Recovery Code</h2>
+        </div>
+        <p className="support-copy" style={{ marginBottom: '14px' }}>
+          Your recovery code is stored only as a cryptographic hash in Neon. It allows you to reset your password if you ever lose access.
+        </p>
+
+        {recoveryError && (
+          <div
+            style={{
+              padding: '8px 12px',
+              borderRadius: '6px',
+              backgroundColor: 'color-mix(in srgb, #e53e3e 15%, var(--page))',
+              color: '#e53e3e',
+              fontSize: '12px',
+              marginBottom: '12px',
+            }}
+          >
+            {recoveryError}
+          </div>
+        )}
+
+        {replacementCode && (
+          <div
+            style={{
+              padding: '14px',
+              borderRadius: '8px',
+              backgroundColor: 'var(--surface)',
+              border: '1px solid var(--line)',
+              marginBottom: '14px',
+            }}
+          >
+            <span style={{ display: 'block', fontSize: '11px', color: 'var(--muted)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Your New Replacement Recovery Code
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <code
+                style={{
+                  fontFamily: 'monospace',
+                  fontSize: '18px',
+                  letterSpacing: '2px',
+                  fontWeight: 700,
+                  color: 'var(--amber)',
+                  background: 'var(--page)',
+                  padding: '8px 14px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--line)',
+                  userSelect: 'all',
+                }}
+              >
+                {replacementCode}
+              </code>
+              <button
+                type="button"
+                onClick={handleCopyRecoveryCode}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--line)',
+                  background: 'var(--surface-raised)',
+                  color: 'var(--ink)',
+                  fontSize: '12px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  cursor: 'pointer',
+                }}
+              >
+                {recoveryCopied ? <Check size={14} style={{ color: '#38a169' }} /> : <Copy size={14} />}
+                {recoveryCopied ? 'Copied' : 'Copy code'}
+              </button>
+            </div>
+            <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#fc8181' }}>
+              ⚠️ Store this code safely. Your previous recovery code was permanently invalidated.
+            </p>
+          </div>
+        )}
+
+        <div className="simple-actions" style={{ marginBottom: '24px' }}>
+          <button
+            type="button"
+            onClick={handleGenerateReplacementCode}
+            disabled={recoveryLoading}
+            style={{
+              padding: '8px 14px',
+              borderRadius: '8px',
+              border: '1px solid var(--line)',
+              background: 'var(--surface)',
+              color: 'var(--ink)',
+              fontSize: '12px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              cursor: 'pointer',
+            }}
+          >
+            <Shield size={14} />
+            {recoveryLoading ? 'Generating...' : 'Generate replacement recovery code'}
+          </button>
+        </div>
+
+        <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '20px 0' }} />
 
         {/* DELETE ACCOUNT SECTION */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
@@ -762,21 +476,24 @@ async function safeParseJson(res: Response): Promise<{ ok: boolean; status: numb
           <h2 style={{ margin: 0, color: '#fc8181' }}>Delete Account &amp; All Data</h2>
         </div>
         <p className="support-copy" style={{ marginBottom: '14px' }}>
-          Permanently erase your account, all saved parcels, customer care tickets, notification history, and attachments. This operation cannot be undone.
+          Permanently erase your account, all shipments, tickets, notification history, and attachments. You can register again with the same email at any time.
         </p>
         <div className="simple-actions">
           <button
             className="danger"
             type="button"
-            onClick={handleOpenDeleteModal}
+            onClick={() => {
+              setIsDeleteModalOpen(true);
+              setDeleteError(null);
+            }}
             style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
           >
-            <Trash2 size={14} /> Delete account &amp; all data
+            <Trash2 size={14} /> Delete my account
           </button>
         </div>
       </article>
 
-      {/* DELETE ACCOUNT CONFIRMATION MODAL */}
+      {/* ONE CONFIRMATION MODAL ASKING "Permanently delete your account and all your data?" */}
       {isDeleteModalOpen && (
         <>
           <div className="modal-backdrop" onClick={() => !deleteLoading && setIsDeleteModalOpen(false)} aria-hidden="true" />
@@ -785,8 +502,8 @@ async function safeParseJson(res: Response): Promise<{ ok: boolean; status: numb
               <div className="dialog-head">
                 <div>
                   <p className="dialog-kicker" style={{ color: '#e53e3e' }}>Danger Zone</p>
-                  <h2 id="delete-account-title">Permanently Delete Account?</h2>
-                  <p className="dialog-sub">This action immediately and irreversibly destroys all associated data.</p>
+                  <h2 id="delete-account-title">Permanently delete your account and all your data?</h2>
+                  <p className="dialog-sub">This action immediately and irreversibly destroys all associated records.</p>
                 </div>
                 <button
                   className="dialog-close"
@@ -813,11 +530,14 @@ async function safeParseJson(res: Response): Promise<{ ok: boolean; status: numb
                     The following records will be permanently erased:
                   </strong>
                   <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '11px', color: 'var(--ink)', lineHeight: '1.6' }}>
-                    <li>Your user profile, email credentials, and authentication records</li>
-                    <li>All active and delivered shipments with full tracking timelines</li>
-                    <li>All customer care support requests and private screenshot attachments</li>
-                    <li>All delivery alerts, reminder preferences, and session tokens</li>
+                    <li>Your profile and credentials from Neon database</li>
+                    <li>All saved courier shipments and parcel histories</li>
+                    <li>All customer care tickets and private screenshot attachments</li>
+                    <li>All delivery alerts and active session tokens</li>
                   </ul>
+                  <p style={{ margin: '8px 0 0', fontSize: '11px', color: 'var(--muted)' }}>
+                    After deletion completes, you can register fresh with the same email address whenever you want.
+                  </p>
                 </div>
 
                 {deleteError && (
@@ -835,78 +555,6 @@ async function safeParseJson(res: Response): Promise<{ ok: boolean; status: numb
                   </div>
                 )}
 
-                {deleteNeedsVerification && (
-                  <div style={{ marginBottom: '16px' }}>
-                    <p style={{ fontSize: '12px', color: 'var(--ink)', marginBottom: '8px' }}>
-                      <strong>Recent security check required:</strong> Send a 6-digit confirmation code to <strong>{currentUser.email}</strong>.
-                    </p>
-                    {!deleteCodeSent ? (
-                      <button
-                        type="button"
-                        onClick={handleRequestDeleteCode}
-                        disabled={deleteLoading}
-                        style={{
-                          padding: '7px 12px',
-                          borderRadius: '6px',
-                          background: 'var(--amber)',
-                          color: '#ffffff',
-                          border: 'none',
-                          fontSize: '12px',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {deleteLoading ? 'Sending...' : 'Send 6-digit code to email'}
-                      </button>
-                    ) : (
-                      <div>
-                        <input
-                          type="text"
-                          maxLength={6}
-                          value={deleteCode}
-                          onChange={(e) => setDeleteCode(e.target.value)}
-                          placeholder="Enter 6-digit code"
-                          style={{
-                            width: '100%',
-                            padding: '8px 10px',
-                            borderRadius: '6px',
-                            border: '1px solid var(--line)',
-                            background: 'var(--page)',
-                            color: 'var(--ink)',
-                            fontSize: '13px',
-                            marginBottom: '6px',
-                          }}
-                        />
-                        <span style={{ fontSize: '11px', color: '#38a169' }}>
-                          ✓ Code sent to {currentUser.email}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <div style={{ marginBottom: '18px' }}>
-                  <label htmlFor="confirm-delete-input" style={{ display: 'block', fontSize: '11px', color: 'var(--muted)', marginBottom: '6px' }}>
-                    To confirm, please type <strong style={{ color: '#e53e3e' }}>DELETE</strong> in uppercase:
-                  </label>
-                  <input
-                    id="confirm-delete-input"
-                    type="text"
-                    value={deleteConfirmText}
-                    onChange={(e) => setDeleteConfirmText(e.target.value)}
-                    placeholder="DELETE"
-                    style={{
-                      width: '100%',
-                      padding: '9px 11px',
-                      borderRadius: '8px',
-                      border: '1px solid var(--line)',
-                      background: 'var(--page)',
-                      color: 'var(--ink)',
-                      fontSize: '13px',
-                      fontWeight: 600,
-                    }}
-                  />
-                </div>
-
                 <div className="dialog-actions">
                   <button
                     type="button"
@@ -919,11 +567,7 @@ async function safeParseJson(res: Response): Promise<{ ok: boolean; status: numb
                     className="danger"
                     type="button"
                     onClick={handleConfirmDelete}
-                    disabled={
-                      deleteLoading ||
-                      deleteConfirmText.trim().toUpperCase() !== 'DELETE' ||
-                      (deleteNeedsVerification && deleteCode.trim().length < 6)
-                    }
+                    disabled={deleteLoading}
                     style={{
                       backgroundColor: '#e53e3e',
                       borderColor: '#e53e3e',
