@@ -27,7 +27,7 @@ class EmailService {
       return `https://${process.env.VERCEL_URL.replace(/\/$/, '')}`;
     }
     if (process.env.VERCEL) {
-      return 'https://parcelpath-brown.vercel.app';
+      return 'https://parcelpath-7q1d.vercel.app';
     }
     return 'http://localhost:3000';
   }

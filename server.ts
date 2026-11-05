@@ -46,7 +46,7 @@ declare global {
 }
 
 // Authentication middleware - strictly requires valid session token
-function authMiddleware(req: Request, res: Response, next: NextFunction) {
+async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   let token: string | undefined;
 
@@ -57,11 +57,16 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
   }
 
   if (token) {
-    const user = db.getUserBySession(token);
-    if (user) {
-      req.user = user;
-      req.sessionToken = token;
-      return next();
+    try {
+      const user = await db.getUserBySession(token);
+      if (user) {
+        req.user = user;
+        req.sessionToken = token;
+        return next();
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(503).json({ error: `Database service unavailable: ${msg}` });
     }
   }
 
@@ -75,69 +80,75 @@ app.get('/api/health/db', async (_req: Request, res: Response) => {
 });
 
 // --- Auth Routes ---
-app.post('/api/auth/register', (req: Request, res: Response) => {
-  const { name, email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required.' });
-  }
+app.post('/api/auth/register', async (req: Request, res: Response) => {
+  try {
+    const { name, email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
 
-  if (typeof password !== 'string' || password.length < 8) {
-    return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
-  }
+    if (typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+    }
 
-  const normEmail = (email || '').trim().toLowerCase();
-  const existing = db.getUserByEmail(normEmail);
+    const normEmail = (email || '').trim().toLowerCase();
+    const existing = await db.getUserByEmail(normEmail);
 
-  if (existing) {
-    return res.status(409).json({
-      error: 'An account with this email already exists. Please sign in or use your recovery code.',
-      code: 'ACCOUNT_EXISTS',
-      action: 'sign_in',
+    if (existing) {
+      return res.status(409).json({
+        error: 'An account with this email already exists. Please sign in or use your recovery code.',
+        code: 'ACCOUNT_EXISTS',
+        action: 'sign_in',
+      });
+    }
+
+    const user = await db.createUser(name || 'Parcel User', normEmail, password, true);
+    const token = await db.createSession(user.id);
+
+    return res.status(201).json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        avatarInitial: user.avatarInitial,
+        role: user.role,
+        notifications: user.notifications,
+        backupRecipient: user.backupRecipient,
+        deliveryInstructions: user.deliveryInstructions,
+      },
+      recoveryCode: user.recoveryCode,
+      message: 'Account created! Please store your recovery code safely.',
     });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(503).json({ error: `Database error: ${msg}` });
   }
-
-  const user = db.createUser(name || 'Parcel User', normEmail, password, true);
-  const token = db.createSession(user.id);
-
-  return res.status(201).json({
-    success: true,
-    token,
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      avatarInitial: user.avatarInitial,
-      role: user.role,
-      notifications: user.notifications,
-      backupRecipient: user.backupRecipient,
-      deliveryInstructions: user.deliveryInstructions,
-    },
-    recoveryCode: user.recoveryCode,
-    message: 'Account created! Please store your recovery code safely.',
-  });
 });
 
-app.post('/api/auth/login', (req: Request, res: Response) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required.' });
-  }
+app.post('/api/auth/login', async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
 
-  const normEmail = (email || '').trim().toLowerCase();
-  const user = db.getUserByEmail(normEmail);
+    const normEmail = (email || '').trim().toLowerCase();
+    const user = await db.getUserByEmail(normEmail);
 
-  if (!user || !db.verifyPassword(user, password)) {
-    return res.status(401).json({ error: 'Invalid username or password.' });
-  }
+    if (!user || !db.verifyPassword(user, password)) {
+      return res.status(401).json({ error: 'Invalid username or password.' });
+    }
 
-  const token = db.createSession(user.id);
-  return res.json({
-    token,
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      avatarInitial: user.avatarInitial,
+    const token = await db.createSession(user.id);
+    return res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        avatarInitial: user.avatarInitial,
       role: user.role,
       notifications: user.notifications,
       backupRecipient: user.backupRecipient,

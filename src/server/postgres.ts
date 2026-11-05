@@ -682,8 +682,308 @@ class NeonPostgres {
     }
   }
 
-  async deleteAccount(userId: string, email: string): Promise<void> {
+  mapUserRow(r: any) {
+    if (!r) return null;
+    return {
+      id: r.id,
+      email: r.email,
+      passwordHash: r.password_hash,
+      name: r.name,
+      avatarInitial: r.avatar_initial,
+      backupRecipient: r.backup_recipient || '',
+      deliveryInstructions: r.delivery_instructions || '',
+      notifications: typeof r.notifications === 'string' ? JSON.parse(r.notifications) : (r.notifications || { statusUpdates: true, arrivalReminders: true }),
+      role: r.role || 'user',
+      emailVerified: r.email_verified !== false,
+      recoveryCodeHash: r.recovery_code_hash || undefined,
+      createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+    };
+  }
+
+  mapShipmentRow(r: any) {
+    if (!r) return null;
+    return {
+      id: r.id,
+      userId: r.user_id,
+      item: r.item,
+      customLabel: r.custom_label || undefined,
+      store: r.store || 'Online Store',
+      trackingNumber: r.tracking_number,
+      courier: r.courier,
+      courierName: r.courier_name,
+      status: r.status,
+      eta: r.eta,
+      estimatedDate: r.estimated_date || undefined,
+      timeWindow: r.time_window || undefined,
+      location: r.location || '',
+      events: typeof r.events === 'string' ? JSON.parse(r.events) : (r.events || []),
+      imageUrl: r.image_url || undefined,
+      isArchived: !!r.is_archived,
+      isDemo: !!r.is_demo,
+      notes: r.notes || undefined,
+      lastUpdated: r.last_updated || undefined,
+      lastRefreshedAt: r.last_refreshed_at ? new Date(r.last_refreshed_at).toISOString() : new Date().toISOString(),
+      courierEventTime: r.courier_event_time || undefined,
+      createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+    };
+  }
+
+  mapTicketRow(r: any) {
+    if (!r) return null;
+    return {
+      id: r.id,
+      ticketRef: r.ticket_ref,
+      userId: r.user_id,
+      userEmail: r.user_email,
+      userName: r.username || '',
+      contactName: r.contact_name || undefined,
+      contactEmail: r.contact_email || undefined,
+      contactPhone: r.contact_phone || undefined,
+      contactWhatsapp: r.contact_whatsapp || undefined,
+      preferredContactMethod: r.preferred_contact_method || 'email',
+      shipmentId: r.shipment_id || undefined,
+      shipmentLabel: r.shipment_label || undefined,
+      trackingNumber: r.tracking_number || undefined,
+      courier: r.courier || undefined,
+      isManualTracking: !!r.is_manual_tracking,
+      category: r.category,
+      categoryLabel: r.category_label || undefined,
+      subject: r.subject,
+      description: r.description,
+      status: r.status || 'Open',
+      staffReply: r.staff_reply || undefined,
+      attachmentName: r.attachment_name || undefined,
+      attachmentDataUrl: r.attachment_data_url || undefined,
+      attachmentSize: r.attachment_size || undefined,
+      attachmentType: r.attachment_type || undefined,
+      createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+    };
+  }
+
+  mapAlertRow(r: any) {
+    if (!r) return null;
+    return {
+      id: r.id,
+      userId: r.user_id,
+      shipmentId: r.shipment_id || '',
+      shipmentItem: r.shipment_item || '',
+      trackingNumber: r.tracking_number || '',
+      type: r.type,
+      title: r.title,
+      message: r.message,
+      read: !!r.read,
+      createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+    };
+  }
+
+  async getUserBySession(token: string): Promise<any | null> {
+    if (!this.isConfigured() || !this.sql) return null;
+    await this.initSchema();
+    const rows = (await this.sql`
+      SELECT u.* FROM users u
+      JOIN sessions s ON u.id = s.user_id
+      WHERE s.token = ${token}
+      LIMIT 1
+    `) as any[];
+    return rows[0] ? this.mapUserRow(rows[0]) : null;
+  }
+
+  async getUserByEmail(email: string): Promise<any | null> {
+    if (!this.isConfigured() || !this.sql) return null;
+    await this.initSchema();
+    const norm = (email || '').trim().toLowerCase();
+    const rows = (await this.sql`
+      SELECT * FROM users WHERE LOWER(email) = ${norm} LIMIT 1
+    `) as any[];
+    return rows[0] ? this.mapUserRow(rows[0]) : null;
+  }
+
+  async getUserById(id: string): Promise<any | null> {
+    if (!this.isConfigured() || !this.sql) return null;
+    await this.initSchema();
+    const rows = (await this.sql`
+      SELECT * FROM users WHERE id = ${id} LIMIT 1
+    `) as any[];
+    return rows[0] ? this.mapUserRow(rows[0]) : null;
+  }
+
+  async getShipmentsForUser(userId: string, filter?: string, search?: string): Promise<any[]> {
+    if (!this.isConfigured() || !this.sql) return [];
+    await this.initSchema();
+    const rows = (await this.sql`
+      SELECT * FROM shipments WHERE user_id = ${userId} ORDER BY created_at DESC
+    `) as any[];
+    let items = rows.map((r: any) => this.mapShipmentRow(r));
+    if (filter === 'active') {
+      items = items.filter((s: any) => !s.isArchived && s.status !== 'Delivered');
+    } else if (filter === 'delivered') {
+      items = items.filter((s: any) => s.status === 'Delivered');
+    } else if (filter === 'attention') {
+      items = items.filter((s: any) => !s.isArchived && (s.status === 'Delivery attempted' || s.status === 'Delayed'));
+    }
+    if (search) {
+      const q = search.trim().toLowerCase();
+      items = items.filter((s: any) =>
+        (s.item || '').toLowerCase().includes(q) ||
+        (s.trackingNumber || '').toLowerCase().includes(q) ||
+        (s.courierName || '').toLowerCase().includes(q) ||
+        (s.store || '').toLowerCase().includes(q)
+      );
+    }
+    return items;
+  }
+
+  async getShipmentById(id: string, userId: string): Promise<any | null> {
+    if (!this.isConfigured() || !this.sql) return null;
+    await this.initSchema();
+    const rows = (await this.sql`
+      SELECT * FROM shipments WHERE id = ${id} AND user_id = ${userId} LIMIT 1
+    `) as any[];
+    return rows[0] ? this.mapShipmentRow(rows[0]) : null;
+  }
+
+  async findDuplicateShipment(userId: string, courier: string, trackingNumber: string): Promise<any | null> {
+    if (!this.isConfigured() || !this.sql) return null;
+    await this.initSchema();
+    const cleanNum = trackingNumber.trim().toUpperCase();
+    const cleanCourier = courier.trim().toLowerCase();
+    const rows = (await this.sql`
+      SELECT * FROM shipments
+      WHERE user_id = ${userId}
+        AND LOWER(courier) = ${cleanCourier}
+        AND UPPER(tracking_number) = ${cleanNum}
+        AND is_archived = FALSE
+      LIMIT 1
+    `) as any[];
+    return rows[0] ? this.mapShipmentRow(rows[0]) : null;
+  }
+
+  async getAlertsForUser(userId: string): Promise<any[]> {
+    if (!this.isConfigured() || !this.sql) return [];
+    await this.initSchema();
+    const rows = (await this.sql`
+      SELECT * FROM alerts WHERE user_id = ${userId} ORDER BY created_at DESC
+    `) as any[];
+    return rows.map((r: any) => this.mapAlertRow(r));
+  }
+
+  async markAlertRead(id: string, userId: string): Promise<boolean> {
+    if (!this.isConfigured() || !this.sql) return false;
+    await this.initSchema();
+    await this.sql`
+      UPDATE alerts SET read = TRUE WHERE id = ${id} AND user_id = ${userId}
+    `;
+    return true;
+  }
+
+  async markAllAlertsRead(userId: string): Promise<void> {
     if (!this.isConfigured() || !this.sql) return;
+    await this.initSchema();
+    await this.sql`
+      UPDATE alerts SET read = TRUE WHERE user_id = ${userId}
+    `;
+  }
+
+  async clearAlerts(userId: string): Promise<void> {
+    if (!this.isConfigured() || !this.sql) return;
+    await this.initSchema();
+    await this.sql`
+      DELETE FROM alerts WHERE user_id = ${userId}
+    `;
+  }
+
+  async getTicketsForUser(userId: string): Promise<any[]> {
+    if (!this.isConfigured() || !this.sql) return [];
+    await this.initSchema();
+    const rows = (await this.sql`
+      SELECT * FROM tickets WHERE user_id = ${userId} ORDER BY created_at DESC
+    `) as any[];
+    return rows.map((r: any) => this.mapTicketRow(r));
+  }
+
+  async getAllTickets(): Promise<any[]> {
+    if (!this.isConfigured() || !this.sql) return [];
+    await this.initSchema();
+    const rows = (await this.sql`
+      SELECT * FROM tickets ORDER BY created_at DESC
+    `) as any[];
+    return rows.map((r: any) => this.mapTicketRow(r));
+  }
+
+  async updateTicketStatus(id: string, status: string, staffReply?: string): Promise<any | null> {
+    if (!this.isConfigured() || !this.sql) return null;
+    await this.initSchema();
+    const rows = (await this.sql`
+      UPDATE tickets
+      SET status = ${status}, staff_reply = COALESCE(${staffReply || null}, staff_reply)
+      WHERE id = ${id}
+      RETURNING *
+    `) as any[];
+    return rows[0] ? this.mapTicketRow(rows[0]) : null;
+  }
+
+  async getEmailIntegration(userId: string): Promise<any> {
+    if (!this.isConfigured() || !this.sql) {
+      return { status: 'disconnected', message: 'Gmail order scanning is not connected.' };
+    }
+    await this.initSchema();
+    const rows = (await this.sql`
+      SELECT * FROM email_integrations WHERE user_id = ${userId} LIMIT 1
+    `) as any[];
+    if (rows[0]) {
+      return {
+        status: rows[0].status,
+        email: rows[0].email || undefined,
+        connectedAt: rows[0].connected_at ? new Date(rows[0].connected_at).toISOString() : undefined,
+        message: rows[0].message || undefined,
+        accessToken: rows[0].access_token || undefined,
+        refreshToken: rows[0].refresh_token || undefined,
+      };
+    }
+    return { status: 'disconnected', message: 'Gmail order scanning is not connected.' };
+  }
+
+  async updateUserProfile(userId: string, updates: any): Promise<any | null> {
+    if (!this.isConfigured() || !this.sql) return null;
+    await this.initSchema();
+    const current = await this.getUserById(userId);
+    if (!current) return null;
+
+    const newName = updates.name !== undefined ? updates.name.trim() : current.name;
+    const newInitial = (newName[0] || 'U').toUpperCase();
+    const newBackup = updates.backupRecipient !== undefined ? updates.backupRecipient : current.backupRecipient;
+    const newDelivery = updates.deliveryInstructions !== undefined ? updates.deliveryInstructions : current.deliveryInstructions;
+    const newNotifs = updates.notifications ? { ...current.notifications, ...updates.notifications } : current.notifications;
+
+    const rows = (await this.sql`
+      UPDATE users
+      SET name = ${newName}, avatar_initial = ${newInitial}, backup_recipient = ${newBackup},
+          delivery_instructions = ${newDelivery}, notifications = ${JSON.stringify(newNotifs)}
+      WHERE id = ${userId}
+      RETURNING *
+    `) as any[];
+    return rows[0] ? this.mapUserRow(rows[0]) : null;
+  }
+
+  async updateUserPassword(userId: string, newPasswordHash: string, keepSessionToken?: string): Promise<void> {
+    if (!this.isConfigured() || !this.sql) throw new Error('Database not configured');
+    await this.initSchema();
+    await this.sql`
+      UPDATE users SET password_hash = ${newPasswordHash} WHERE id = ${userId}
+    `;
+    if (keepSessionToken) {
+      await this.sql`
+        DELETE FROM sessions WHERE user_id = ${userId} AND token != ${keepSessionToken}
+      `;
+    } else {
+      await this.sql`
+        DELETE FROM sessions WHERE user_id = ${userId}
+      `;
+    }
+  }
+
+  async deleteAccount(userId: string, email: string): Promise<void> {
+    if (!this.isConfigured() || !this.sql) throw new Error('Database not configured');
     try {
       const normEmail = (email || '').toLowerCase();
       // Record tombstone so later imports never restore this user
@@ -704,7 +1004,14 @@ class NeonPostgres {
       console.log(`[NeonPostgres] Successfully purged all records for user ${userId} (${email}).`);
     } catch (e) {
       console.error('[NeonPostgres] deleteAccount error:', e);
+      throw e;
     }
+  }
+
+  async deleteAccountSessions(userId: string): Promise<void> {
+    if (!this.isConfigured() || !this.sql) return;
+    await this.initSchema();
+    await this.sql`DELETE FROM sessions WHERE user_id = ${userId}`;
   }
 }
 
